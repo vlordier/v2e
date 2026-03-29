@@ -81,7 +81,7 @@ class SuperSloMo(object):
         """
 
         if torch.cuda.is_available():
-            self.device = "cpu"
+            self.device = "cuda:0"
             logger.info('CUDA available, running on GPU :-)')
         else:
             self.device = "cpu"
@@ -185,7 +185,8 @@ class SuperSloMo(object):
             shuffle=False)
         return videoFramesloader, frames.dim, frames.origDim
 
-    def __model(self, dim):\n        \"\"\"Initialize the pytorch model\n        try:\n
+    def __model(self, dim):
+        """Initialize the pytorch model
 
         Parameters
         ---------
@@ -221,7 +222,7 @@ class SuperSloMo(object):
         # dict1 = torch.load(self.checkpoint, map_location='cpu')
         # fails intermittently on windows
 
-        dict1 = torch.load(self.checkpoint, map_location=self.device, weights_only=False)\n        except Exception as e:\n            logger.error(f'could not load slomo model {self.checkpoint}: {e}')\n            logger.error('structured log: {\"level\": \"ERROR\", \"file\": \"slomo.py\", \"error\": \"torch model load\", \"path\": \"%s\", \"exception\": \"%s\"}' % (self.checkpoint, str(e)))\n            raise\n
+        dict1 = torch.load(self.checkpoint, map_location=self.device, weights_only=False)
         interpolator.load_state_dict(dict1['state_dictAT'])
         flow_estimator.load_state_dict(dict1['state_dictFC'])
 

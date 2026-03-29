@@ -1,7 +1,13 @@
-"""Collections of emulator utilities.
+"""Emulator utilities for DVS event computation.
 
-Author: Yuhuang Hu, Tobi Delbruck
-Email : yuhuang.hu@ini.uzh.ch, tobi@ini.uzh.ch
+Provides torch-based functions for:
+- lin_log mapping (linear to logarithmic intensity)
+- IIR lowpass filtering (intensity-dependent photoreceptor model)
+- Event map computation (threshold-based ON/OFF event detection)
+- Leak current subtraction (pixel leakage modeling)
+- Shot noise generation (Poisson temporal noise)
+
+All functions operate on torch Tensors for GPU acceleration.
 """
 
 import logging
@@ -53,30 +59,37 @@ def rescale_intensity_frame(new_frame):
     return (new_frame + 20) / 275.0
 
 
-from numba import jit
 
+def subtract_leak_current(
+    base_log_frame: torch.Tensor,
+    leak_rate_hz: float,
+    delta_time: float,
+    pos_thres: torch.Tensor,
+    leak_jitter_fraction: float,
+    noise_rate_array: torch.Tensor,
+) -> torch.Tensor:
+    """Subtract leak current from base log frame.
 
-@jit(nopython=True)
-def low_pass_filter_numba(log_new_frame, lp_log_frame, inten01, delta_time, cutoff_hz):
-    h, w = log_new_frame.shape
-    out = np.zeros((h, w), dtype=np.float32)
-    if cutoff_hz <= 0:
-        for i in range(h):
-            for j in range(w):
-                out[i, j] = log_new_frame[i, j]
-        return out
-    tau = 1 / (np.pi * 2 * cutoff_hz)
-    if inten01 is None:
-        eps = delta_time / tau
-    else:
-        eps = inten01 * (delta_time / tau)
-        eps = np.clip(eps, 0, 1)
-    for i in range(h):
-        for j in range(w):
-            out[i, j] = (1 - eps[i, j]) * lp_log_frame[i, j] + eps[
-                i, j
-            ] * log_new_frame[i, j]
-    return out
+    Models pixel-to-pixel variation in leakage rate via a log-normal
+    noise_rate_array multiplied by Gaussian jitter.
+
+    Args:
+        base_log_frame: Memorized log intensity values [H, W].
+        leak_rate_hz: Nominal leak event rate per pixel (Hz).
+        delta_time: Time step since last frame (seconds).
+        pos_thres: Per-pixel ON thresholds [H, W].
+        leak_jitter_fraction: Fractional jitter std dev for leak rate.
+        noise_rate_array: Per-pixel noise rate variation [H, W].
+
+    Returns:
+        Updated base_log_frame with leak current subtracted.
+    """
+    rand = torch.randn(
+        noise_rate_array.shape, dtype=torch.float32, device=noise_rate_array.device
+    )
+    curr_leak_rate = leak_rate_hz * noise_rate_array * (1 - leak_jitter_fraction * rand)
+    delta_leak = delta_time * curr_leak_rate * pos_thres
+    return base_log_frame - delta_leak
 
 
 def low_pass_filter(log_new_frame, lp_log_frame, inten01, delta_time, cutoff_hz):
@@ -396,66 +409,3 @@ def generate_shot_noise(
     shot_off_cord = torch.lt(rand01, shot_OFF_prob_this_sample)
 
     return shot_on_cord, shot_off_cord
-
-    # old shot noise, generate at every iteration.
-    # the right device
-    #  device = base_log_frame.device
-
-    # array with True where ON noise event
-    #  shot_ON_cord = rand01 > (1-shot_ON_prob_this_sample)
-    #
-    #  shot_OFF_cord = rand01 < shot_OFF_prob_this_sample
-
-    # get shot noise event ON and OFF cordinates
-    #  shot_ON_xy = shot_ON_cord.nonzero(as_tuple=True)
-    #  shot_ON_count = shot_ON_xy[0].shape[0]
-    #
-    #  shot_OFF_xy = shot_OFF_cord.nonzero(as_tuple=True)
-    #  shot_OFF_count = shot_OFF_xy[0].shape[0]
-
-    #  self.num_events_on += shotOnCount
-    #  self.num_events_off += shotOffCount
-    #  self.num_events_total += shotOnCount+shotOffCount
-
-    # update log_frame
-    #  base_log_frame += shot_ON_cord*pos_thres
-    #  base_log_frame -= shot_OFF_cord*neg_thres
-
-    #  if shot_ON_count > 0:
-    #      shot_ON_events = torch.ones(
-    #          (shot_ON_count, 4), dtype=torch.float32, device=device)
-    #      shot_ON_events[:, 0] *= ts
-    #      shot_ON_events[:, 1] = shot_ON_xy[1]
-    #      shot_ON_events[:, 2] = shot_ON_xy[0]
-    #
-    #      base_log_frame += shot_ON_cord*pos_thres
-    #  else:
-    #      shot_ON_events = torch.zeros(
-    #          (0, 4), dtype=torch.float32, device=device)
-    #
-    #  if shot_OFF_count > 0:
-    #      shot_OFF_events = torch.ones(
-    #          (shot_OFF_count, 4), dtype=torch.float32, device=device)
-    #      shot_OFF_events[:, 0] *= ts
-    #      shot_OFF_events[:, 1] = shot_OFF_xy[1]
-    #      shot_OFF_events[:, 2] = shot_OFF_xy[0]
-    #      shot_OFF_events[:, 3] *= -1
-    #
-    #      base_log_frame -= shot_OFF_cord*neg_thres
-    #  else:
-    #      shot_OFF_events = torch.zeros(
-    #          (0, 4), dtype=torch.float32, device=device)
-    # end temporal noise
-
-    #  return shot_ON_events, shot_OFF_events, base_log_frame
-    #  return shot_ON_cord, shot_OFF_cord, base_log_frame
-    #  return shot_ON_cord, shot_OFF_cord
-
-
-if __name__ == "__main__":
-    temp_input = torch.randint(0, 256, (1280, 720), dtype=torch.float32).cuda()
-
-    for i in range(1000):
-        temp_out = lin_log(temp_input, threshold=20)
-
-    pass
