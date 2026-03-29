@@ -142,31 +142,6 @@ def low_pass_filter(log_new_frame, lp_log_frame, inten01, delta_time, cutoff_hz)
 low_pass_filter._warning_count = 0
 
 
-@jit(nopython=True)
-def subtract_leak_current_numba(
-    base_log_frame,
-    leak_rate_hz,
-    delta_time,
-    pos_thres,
-    leak_jitter_fraction,
-    noise_rate_array,
-):
-    """Subtract leak current from base log frame."""
-
-    rand = torch.randn(
-        noise_rate_array.shape, dtype=torch.float32, device=noise_rate_array.device
-    )
-
-    curr_leak_rate = leak_rate_hz * noise_rate_array * (1 - leak_jitter_fraction * rand)
-
-    delta_leak = delta_time * curr_leak_rate * pos_thres  # this is a matrix
-
-    # ideal model
-    #  delta_leak = delta_time*leak_rate_hz*pos_thres  # this is a matrix
-
-    return base_log_frame - delta_leak
-
-
 def compute_event_map(diff_frame, pos_thres, neg_thres):
     """
         Compute event maps, i.e. 2d arrays of [width,height] containing quantized number of ON and OFF events.
