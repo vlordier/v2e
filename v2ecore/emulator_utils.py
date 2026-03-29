@@ -709,8 +709,8 @@ def get_compiled_step_leak_sn():
 def asm_events_cpu(pe, ne, ts_val):
     """Assemble event array on CPU from MPS event count tensors.
 
-    Transfers pe/ne to CPU and uses vectorized numpy operations (2.7x faster
-    than loop-based nonzero for typical sparse event counts).
+    Transfers pe/ne to CPU and uses vectorized numpy operations
+    (searchsorted for timestamps, repeat for coordinates).
     """
     import numpy as np
     pe_np = pe.cpu().numpy()
