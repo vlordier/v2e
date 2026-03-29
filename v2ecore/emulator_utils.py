@@ -20,34 +20,36 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
-def lin_log(x, threshold=20):
-    """
-    linear mapping + logarithmic mapping.
+def lin_log(x: torch.Tensor, threshold: float = 20) -> torch.Tensor:
+    """Piecewise linear-logarithmic intensity mapping.
 
-    :param x: float or ndarray
-        the input linear value in range 0-255 TODO assumes 8 bit
-    :param threshold: float threshold 0-255
-        the threshold for transition from linear to log mapping
+    Maps linear intensity values to a hybrid linear+log scale:
+    - Below threshold: linear mapping (scaled log(threshold)/threshold)
+    - Above threshold: natural logarithm
 
-    Returns: the log value
+    The transition is continuous at the threshold point. A floating-point
+    rounding step prevents precision artifacts that could cause spurious
+    OFF events after ON events during motion.
+
+    Args:
+        x: Input linear intensity values (any shape). Assumes 8-bit range 0-255.
+        threshold: Transition point from linear to log mapping (default 20).
+
+    Returns:
+        Logarithmically-mapped values (same shape as x, float32).
     """
-    # converting x into np.float64.
-    if x.dtype is not torch.float64:  # note float64 to get rounding to work
-        x = x.double()
+    if x.dtype != torch.float32:
+        x = x.float()
 
     f = (1.0 / threshold) * math.log(threshold)
 
     y = torch.where(x <= threshold, x * f, torch.log(x))
 
-    # important, we do a floating point round to some digits of precision
-    # to avoid that adding threshold and subtracting it again results
-    # in different number because first addition shoots some bits off
-    # to never-never land, thus preventing the OFF events
-    # that ideally follow ON events when object moves by
+    # Round to avoid precision artifacts that cause spurious events
     rounding = 1e8
     y = torch.round(y * rounding) / rounding
 
-    return y.float()
+    return y
 
 
 def rescale_intensity_frame(new_frame):

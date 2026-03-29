@@ -719,7 +719,7 @@ class EventEmulator:
             self.photoreceptor_noise_arr = low_pass_filter(noise, self.photoreceptor_noise_arr, None, delta_time,
                                                            self.cutoff_hz)
             self.photoreceptor_noise_samples.append(
-                self.photoreceptor_noise_arr[0, 0].cpu().item())  # todo debugging can remove
+                self.photoreceptor_noise_arr[0, 0].item())
             # std=np.std(self.photoreceptor_noise_samples)
 
         # surround computations by time stepping the diffuser
@@ -790,8 +790,7 @@ class EventEmulator:
         pos_evts_frame, neg_evts_frame = compute_event_map(
             self.diff_frame, self.pos_thres, self.neg_thres)
         max_num_events_any_pixel = max(pos_evts_frame.max(),
-                                       neg_evts_frame.max())  # max number of events in any pixel for this interframe
-        max_num_events_any_pixel=max_num_events_any_pixel.cpu().numpy().item() # turn singleton tensor to scalar
+                                       neg_evts_frame.max()).item()  # scalar via implicit MPS→CPU
         if max_num_events_any_pixel > 100:
             logger.warning(f'Too many events generated for this frame: num_iter={max_num_events_any_pixel}>100 events')
 
