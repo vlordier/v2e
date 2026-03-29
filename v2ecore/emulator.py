@@ -746,6 +746,87 @@ class EventEmulator:
                 logger.warning(f'Too many events: num_iter={max_num_events_any_pixel}>100')
 
             # Skip to event generation (lines below)
+            # Use optimized CPU assembly for the simple fast path
+            if (self.refractory_period_s <= 0
+                    and not self.label_signal_noise
+                    and (self.shot_noise_rate_hz == 0 or self.photoreceptor_noise)):
+                # Zero-event fast path
+                if max_num_events_any_pixel == 0:
+                    if self.no_events_warning_count < 100:
+                        logger.warning(f'no signal events for frame #{self.frame_counter:,} at t={t_frame:.4f}s')
+                        self.no_events_warning_count += 1
+                    self.t_previous = t_frame
+                    self.frame_counter += 1
+                    return None
+
+                # CPU assembly (2-4x faster than MPS nonzero for sparse events)
+                pe_cpu = pos_evts_frame.cpu().numpy()
+                ne_cpu = neg_evts_frame.cpu().numpy()
+                total_events = int(pe_cpu.sum() + ne_cpu.sum())
+                if total_events == 0:
+                    self.t_previous = t_frame
+                    self.frame_counter += 1
+                    return None
+
+                min_ts = int(max_num_events_any_pixel)
+                ts_step = delta_time / min_ts
+                ts_np = np.linspace(self.t_previous + ts_step, t_frame, num=min_ts, dtype=np.float32)
+
+                events = np.empty((total_events, 4), dtype=np.float32)
+                idx = 0
+                for i in range(min_ts):
+                    pos_mask = pe_cpu >= (i + 1)
+                    neg_mask = ne_cpu >= (i + 1)
+                    pos_y, pos_x = pos_mask.nonzero()
+                    neg_y, neg_x = neg_mask.nonzero()
+                    np_ = len(pos_y)
+                    nn_ = len(neg_y)
+                    n = np_ + nn_
+                    if n > 0:
+                        events[idx:idx+n, 0] = ts_np[i]
+                        if np_ > 0:
+                            events[idx:idx+np_, 1] = pos_x.astype(np.float32)
+                            events[idx:idx+np_, 2] = pos_y.astype(np.float32)
+                            events[idx:idx+np_, 3] = 1.0
+                        if nn_ > 0:
+                            events[idx:idx+nn_, 1] = neg_x.astype(np.float32)
+                            events[idx:idx+nn_, 2] = neg_y.astype(np.float32)
+                            events[idx:idx+nn_, 3] = -1.0
+                        idx += n
+
+                events = events[:idx]
+                self.num_events_on += int((events[:, 3] == 1).sum())
+                self.num_events_off += int((events[:, 3] == -1).sum())
+                self.num_events_total += len(events)
+
+                # Update base frame
+                final_pos = torch.from_numpy(pe_cpu).to(self.device, dtype=torch.int32)
+                final_neg = torch.from_numpy(ne_cpu).to(self.device, dtype=torch.int32)
+                self.base_log_frame += final_pos * self.pos_thres
+                self.base_log_frame -= final_neg * self.neg_thres
+
+                self.t_previous = t_frame
+                self.frame_counter += 1
+
+                # Write output
+                if self.dvs_h5 is not None:
+                    temp_events = np.array(events, dtype=np.float32)
+                    temp_events[:, 0] *= 1e6
+                    temp_events[temp_events[:, 3] == -1, 3] = 0
+                    temp_events = temp_events.astype(np.uint32)
+                    self.dvs_h5_dataset.resize(self.dvs_h5_dataset.shape[0] + temp_events.shape[0], axis=0)
+                    self.dvs_h5_dataset[-temp_events.shape[0]:] = temp_events
+                if self.dvs_aedat2 is not None:
+                    self.dvs_aedat2.appendEvents(events)
+                if self.dvs_aedat4 is not None:
+                    self.dvs_aedat4.appendEvents(events)
+                if self.dvs_text is not None:
+                    self.dvs_text.appendEvents(events)
+
+                return events if len(events) > 0 else None
+
+            # Fall through to original event assembly for complex cases
+            # (refractory period, label_signal_noise, shot noise)
         else:
             # --- Full path: scidvs, csdvs, photoreceptor_noise, or debug ---
             # lin-log mapping
