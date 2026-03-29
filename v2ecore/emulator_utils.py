@@ -58,8 +58,8 @@ def lin_log(x: torch.Tensor, threshold: float = 20) -> torch.Tensor:
     Returns:
         Logarithmically-mapped values (same shape as x, float32).
     """
-    # Fast path: LUT for uint8-range inputs
-    if x.max() <= 255 and x.min() >= 0:
+    # Fast path: LUT for uint8-range inputs on CPU (MPS indexing overhead too high)
+    if x.max() <= 255 and x.min() >= 0 and x.device.type == 'cpu':
         lut = _build_lin_log_lut(threshold, x.device)
         indices = x.long().clamp(0, 255)
         return lut[indices]
