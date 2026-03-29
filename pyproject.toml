@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "v2e"
+dynamic = ["version"]
+description = "Generates synthetic DVS events from conventional video"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "Tobi Delbruck, Yuhuang Hu, Zhe He", email = "yuhuang.hu@ini.uzh.ch, tobi@ini.uzh.ch"},
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Natural Language :: English",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Utilities",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "numpy>=1.24,<2.0",
+  "argcomplete",
+  "engineering-notation",
+  "tqdm",
+  "opencv-python",
+  "h5py",
+  "torch",
+  "torchvision",
+  "numba",
+  "matplotlib",
+  "plyer",
+  "screeninfo",
+  "easygui",
+  "scikit-image",
+  "dv-processing",
+]
+
+[project.scripts]
+v2e = "v2e:main"
+ddd_extract_data = "dataset_scripts.ddd.ddd_extract_data:main"
+
+[project.optional-dependencies.dev]
+ruff = [">=0.5.0"]
+mypy = []
+pytest = []
+pytest-cov = []
+pre-commit = []
+types-numpy = []
+types-Pillow = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "Q", "C901", "PLR0912", "PLR0914", "PLR0915"]
+ignore = ["S101", "S108", "S301", "E501"]
+per-file-ignores = {"dataset_scripts/**" = ["E501", "UP031", "E711", "E712", "E402", "S101", "B007", "S311"], "scripts/**" = ["E501", "F403", "F405", "F841", "B007"], "test/**" = ["S101", "S108"]}
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["cv2.*", "torch.*", "numba.*", "plyer.*", "screeninfo.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=v2ecore --cov-report=html --cov-report=term-missing"
+
+[tool.hatch.version]
+source = "vcs"

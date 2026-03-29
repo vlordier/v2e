@@ -8,7 +8,7 @@ import math
 import os
 import pickle
 import random
-from typing import Optional
+from typing import Optional, List, Tuple, Dict, Any
 
 import cv2
 import h5py
@@ -16,12 +16,11 @@ import numpy as np
 import torch  # https://pytorch.org/docs/stable/torch.html
 from screeninfo import get_monitors
 
-from v2ecore.emulator_utils import compute_event_map, compute_photoreceptor_noise_voltage
-from v2ecore.emulator_utils import generate_shot_noise
-from v2ecore.emulator_utils import lin_log
-from v2ecore.emulator_utils import low_pass_filter
+from v2ecore.emulator_utils import compute_event_map, lin_log
 from v2ecore.emulator_utils import rescale_intensity_frame
 from v2ecore.emulator_utils import subtract_leak_current
+from v2ecore.emulator_filters import low_pass_filter
+from v2ecore.noise import compute_photoreceptor_noise_voltage, generate_shot_noise
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
 from v2ecore.output.aedat4_output import AEDat4Output
@@ -83,9 +82,7 @@ class EventEmulator(object):
     SCIDVS_TAU_S: float = .01  # small signal time constant in seconds
     SCIDVS_TAU_COV: float = 0.5  # each pixel has its own time constant. The tau's have log normal distribution with this sigma
 
-    def __init__(
-            self,
-            pos_thres: float = 0.2,
+    def __init__(\n            self,\n            pos_thres: float = 0.2,\n            neg_thres: float = 0.2,\n            sigma_thres: float = 0.03,\n            cutoff_hz: float = 0.0,\n            leak_rate_hz: float = 0.1,\n            refractory_period_s: float = 0.0,\n            shot_noise_rate_hz: float = 0.0,\n            photoreceptor_noise: bool = False,\n            leak_jitter_fraction: float = 0.1,\n            noise_rate_cov_decades: float = 0.1,\n            seed: int = 0,\n            output_folder: Optional[str] = None,\n            dvs_h5: Optional[str] = None,\n            dvs_aedat2: Optional[str] = None,\n            dvs_aedat4: Optional[str] = None,\n            dvs_text: Optional[str] = None,\n            show_dvs_model_state: Optional[str] = None,\n            save_dvs_model_state: bool = False,\n            output_width: Optional[int] = None,\n            output_height: Optional[int] = None,\n            device: str = "cuda",\n            cs_lambda_pixels: Optional[float] = None,\n            cs_tau_p_ms: Optional[float] = None,\n            hdr: bool = False,\n            scidvs: bool = False,\n            record_single_pixel_states: Optional[Tuple[int, int]] = None,\n            label_signal_noise: bool = False\n    ) -> None:\n
             neg_thres: float = 0.2,
             sigma_thres: float = 0.03,
             cutoff_hz: float = 0.0,
@@ -343,7 +340,7 @@ class EventEmulator(object):
                 path = os.path.join(self.output_folder, dvs_text)
                 path = checkAddSuffix(path, '.txt')
                 logger.info('opening text DVS output file ' + path)
-                self.dvs_text = DVSTextOutput(path,label_signal_noise=self.label_signal_noise)
+                self.dvs_text = DVSTextOutput(path,label_signal_noise=self.label_signal_noise)\n        except Exception as e:\n            logger.error(f'could not open output file {path}: {e}')\n            logger.error('structured log: {\"level\": \"ERROR\", \"file\": \"emulator.py\", \"error\": \"output file open\", \"path\": \"%s\", \"exception\": \"%s\"}' % (path, str(e)))\n            raise
 
 
 
@@ -969,7 +966,7 @@ class EventEmulator(object):
 
             if self.dvs_aedat4 is not None:
                 self.dvs_aedat4.appendEvents(events, signnoise_label=signnoise_label)
-                
+
             if self.dvs_text is not None:
                 if self.label_signal_noise:
                     self.dvs_text.appendEvents(events, signnoise_label=signnoise_label)
