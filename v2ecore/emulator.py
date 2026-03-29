@@ -1,6 +1,13 @@
 """
-DVS simulator.
-Compute events from input frames.
+DVS (Dynamic Vision Sensor) event emulator.
+
+Simulates event-driven vision sensor output from conventional video frames.
+Computes per-pixel brightness changes and generates ON/OFF events when
+changes exceed configurable thresholds, modeling real DVS sensor behavior
+including temporal noise, leak currents, and center-surround inhibition.
+
+Author: Tobi Delbruck, Yuhuang Hu, Zhe He
+Contact: tobi@ini.uzh.ch
 """
 import atexit
 import logging
@@ -31,10 +38,24 @@ from v2ecore.v2e_utils import checkAddSuffix, v2e_quit, video_writer
 logger = logging.getLogger(__name__)
 
 
-class EventEmulator(object):
-    """compute events based on the input frame.
-    - author: Tobi Delbruck, Yuhuang Hu, Zhe He
-    - contact: tobi@ini.uzh.ch
+class EventEmulator:
+    """DVS event emulator that computes ON/OFF events from input frames.
+
+    Simulates the DVS pixel behavior: each pixel has a memorized log-intensity
+    (base_log_frame) that is compared to the current lowpass-filtered input.
+    When the difference exceeds a positive or negative threshold, events are
+    generated and the memorized value is updated.
+
+    Supports optional non-idealities: temporal noise, leak currents,
+    refractory period, center-surround inhibition, SCIDVS adaptation,
+    and HDR logarithmic input.
+
+    Attributes:
+        MODEL_STATES: Dict of named internal states and their display ranges.
+        num_events_total: Total events generated so far.
+        num_events_on: Total ON events.
+        num_events_off: Total OFF events.
+        frame_counter: Number of frames processed.
     """
 
     # frames that can be displayed and saved to video with their plotting/display settings
