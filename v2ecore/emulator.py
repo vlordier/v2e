@@ -480,6 +480,11 @@ class EventEmulator:
         # Pre-allocated random buffer to avoid allocation per frame
         self._rand_buf = torch.zeros(first_frame_linear.shape, dtype=torch.float32, device=self.device)
 
+        # Pre-computed coordinate LUT (flat index → y, x) for fast event assembly
+        H, W = first_frame_linear.shape
+        self._flat_to_y = (np.arange(H * W) // W).astype(np.float32)
+        self._flat_to_x = (np.arange(H * W) % W).astype(np.float32)
+
         # take the variance of threshold into account.
         if self.sigma_thres > 0:
             self.pos_thres = torch.normal(
@@ -789,9 +794,8 @@ class EventEmulator:
 
                 # Expand coordinates by count
                 if np_ > 0:
-                    pos_y, pos_x = np.divmod(pos_idx, W)
-                    pos_x = pos_x.astype(np.float32)
-                    pos_y = pos_y.astype(np.float32)
+                    pos_x = self._flat_to_x[pos_idx]
+                    pos_y = self._flat_to_y[pos_idx]
                     events[:np_, 1] = np.repeat(pos_x, pos_counts)
                     events[:np_, 2] = np.repeat(pos_y, pos_counts)
                     events[:np_, 3] = 1.0
@@ -805,9 +809,8 @@ class EventEmulator:
                         pixel_idx = np.searchsorted(cs, indices, side='right')
                         events[:np_, 0] = ts_np[indices - starts[pixel_idx]]
                 if nn_ > 0:
-                    neg_y, neg_x = np.divmod(neg_idx, W)
-                    neg_x = neg_x.astype(np.float32)
-                    neg_y = neg_y.astype(np.float32)
+                    neg_x = self._flat_to_x[neg_idx]
+                    neg_y = self._flat_to_y[neg_idx]
                     events[np_:, 1] = np.repeat(neg_x, neg_counts)
                     events[np_:, 2] = np.repeat(neg_y, neg_counts)
                     events[np_:, 3] = -1.0

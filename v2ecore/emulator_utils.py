@@ -724,10 +724,10 @@ def get_compiled_step_leak_sn():
     return _compiled_step_leak_sn
 
 
-def asm_events_cpu(pe, ne, ts_val):
+def asm_events_cpu(pe, ne, ts_val, flat_to_x=None, flat_to_y=None):
     """Assemble event array on CPU from MPS event count tensors.
 
-    Uses 1D nonzero (8.3x faster than 2D) + divmod for coordinates.
+    Uses 1D nonzero (8.3x faster than 2D) + divmod/LUT for coordinates.
     """
     import numpy as np
     pe_np = pe.cpu().numpy()
@@ -746,15 +746,37 @@ def asm_events_cpu(pe, ne, ts_val):
         return None
     evts = np.empty((n, 4), dtype=np.float32)
     if np_ > 0:
-        pos_y, pos_x = np.divmod(pos_idx, W)
-        evts[:np_, 1] = np.repeat(pos_x.astype(np.float32), pos_counts)
-        evts[:np_, 2] = np.repeat(pos_y.astype(np.float32), pos_counts)
+        if flat_to_x is not None:
+            px = flat_to_x[pos_idx]
+            py = flat_to_y[pos_idx]
+        else:
+            py, px = np.divmod(pos_idx, W)
+            px = px.astype(np.float32)
+            py = py.astype(np.float32)
+        if np.all(pos_counts == 1):
+            evts[:np_, 1] = px
+            evts[:np_, 2] = py
+            evts[:np_, 0] = ts_val
+        else:
+            evts[:np_, 1] = np.repeat(px, pos_counts)
+            evts[:np_, 2] = np.repeat(py, pos_counts)
+            evts[:np_, 0] = ts_val
         evts[:np_, 3] = 1.0
-        evts[:np_, 0] = ts_val
     if nn_ > 0:
-        neg_y, neg_x = np.divmod(neg_idx, W)
-        evts[np_:, 1] = np.repeat(neg_x.astype(np.float32), neg_counts)
-        evts[np_:, 2] = np.repeat(neg_y.astype(np.float32), neg_counts)
+        if flat_to_x is not None:
+            nx = flat_to_x[neg_idx]
+            ny = flat_to_y[neg_idx]
+        else:
+            ny, nx = np.divmod(neg_idx, W)
+            nx = nx.astype(np.float32)
+            ny = ny.astype(np.float32)
+        if np.all(neg_counts == 1):
+            evts[np_:, 1] = nx
+            evts[np_:, 2] = ny
+            evts[np_:, 0] = ts_val
+        else:
+            evts[np_:, 1] = np.repeat(nx, neg_counts)
+            evts[np_:, 2] = np.repeat(ny, neg_counts)
+            evts[np_:, 0] = ts_val
         evts[np_:, 3] = -1
-        evts[np_:, 0] = ts_val
     return evts
