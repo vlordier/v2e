@@ -28,7 +28,7 @@ from v2ecore.emulator_utils import rescale_intensity_frame
 from v2ecore.emulator_utils import subtract_leak_current
 from v2ecore.emulator_utils import low_pass_filter, low_pass_filter_inplace, fused_photoreceptor_step
 from v2ecore.emulator_utils import compute_photoreceptor_noise_voltage, generate_shot_noise
-from v2ecore.emulator_utils import get_compiled_step
+from v2ecore.emulator_utils import get_compiled_step, get_compiled_step_leak
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
 from v2ecore.output.aedat4_output import AEDat4Output
@@ -475,6 +475,9 @@ class EventEmulator:
         # base_frame are memorized lin_log pixel values
         self.diff_frame = None
 
+        # Pre-allocated random buffer to avoid allocation per frame
+        self._rand_buf = torch.zeros(first_frame_linear.shape, dtype=torch.float32, device=self.device)
+
         # take the variance of threshold into account.
         if self.sigma_thres > 0:
             self.pos_thres = torch.normal(
@@ -694,28 +697,45 @@ class EventEmulator:
                 and not self.photoreceptor_noise
                 and self.show_dvs_model_state is None):
 
-            if inten01 is not None:
+            if inten01 is not None and self.leak_rate_hz > 0:
+                # Fully fused: lin_log + lowpass + leak + diff + event_map
+                tau = 1 / (math.pi * 2 * self.cutoff_hz)
+                compiled_fn = get_compiled_step_leak()
+                self.lp_log_frame, self.base_log_frame, pos_evts_frame, neg_evts_frame = compiled_fn(
+                    self.new_frame, self.lp_log_frame, self.base_log_frame,
+                    self.pos_thres, self.neg_thres, inten01,
+                    self.noise_rate_array, self._rand_buf,
+                    delta_time, tau, self.leak_rate_hz, self.leak_jitter_fraction)
+            elif inten01 is not None:
+                # Fused: lin_log + lowpass + diff + event_map (no leak)
                 tau = 1 / (math.pi * 2 * self.cutoff_hz)
                 compiled_fn = get_compiled_step()
                 self.lp_log_frame, pos_evts_frame, neg_evts_frame = compiled_fn(
                     self.new_frame, self.lp_log_frame, self.base_log_frame,
                     self.pos_thres, self.neg_thres, inten01, delta_time, tau)
+                # Leak separately
+                if self.leak_rate_hz > 0:
+                    self.base_log_frame = subtract_leak_current(
+                        base_log_frame=self.base_log_frame,
+                        leak_rate_hz=self.leak_rate_hz,
+                        delta_time=delta_time,
+                        pos_thres=self.pos_thres,
+                        leak_jitter_fraction=self.leak_jitter_fraction,
+                        noise_rate_array=self.noise_rate_array)
             else:
                 # No lowpass: just lin_log + diff + event_map
                 self.log_new_frame = lin_log(self.new_frame)
                 self.diff_frame = self.log_new_frame - self.base_log_frame
                 pos_evts_frame, neg_evts_frame = compute_event_map(
                     self.diff_frame, self.pos_thres, self.neg_thres)
-
-            # Leak events
-            if self.leak_rate_hz > 0:
-                self.base_log_frame = subtract_leak_current(
-                    base_log_frame=self.base_log_frame,
-                    leak_rate_hz=self.leak_rate_hz,
-                    delta_time=delta_time,
-                    pos_thres=self.pos_thres,
-                    leak_jitter_fraction=self.leak_jitter_fraction,
-                    noise_rate_array=self.noise_rate_array)
+                if self.leak_rate_hz > 0:
+                    self.base_log_frame = subtract_leak_current(
+                        base_log_frame=self.base_log_frame,
+                        leak_rate_hz=self.leak_rate_hz,
+                        delta_time=delta_time,
+                        pos_thres=self.pos_thres,
+                        leak_jitter_fraction=self.leak_jitter_fraction,
+                        noise_rate_array=self.noise_rate_array)
 
             max_num_events_any_pixel = max(pos_evts_frame.max(),
                                            neg_evts_frame.max()).item()

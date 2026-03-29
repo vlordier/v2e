@@ -515,8 +515,45 @@ def _fused_photoreceptor_step_compiled(
     return lp_buf, pe, ne
 
 
+def _fused_step_with_leak(
+    frame: torch.Tensor,
+    lp_buf: torch.Tensor,
+    base_buf: torch.Tensor,
+    pos_thres: torch.Tensor,
+    neg_thres: torch.Tensor,
+    inten01: torch.Tensor,
+    noise_rate_arr: torch.Tensor,
+    rand_buf: torch.Tensor,
+    delta_time: float,
+    tau: float,
+    leak_rate_hz: float,
+    leak_jitter: float,
+) -> tuple:
+    """Fused pipeline: lin_log + lowpass + leak + diff + event_map.
+
+    Leak subtraction is included in the compiled kernel, eliminating
+    a separate kernel launch.
+    """
+    log_frame = torch.where(frame <= _LIN_LOG_THRESHOLD, frame * _LIN_LOG_F, torch.log(frame))
+    log_frame = torch.round(log_frame * _ROUNDING) / _ROUNDING
+    eps = inten01 * (delta_time / tau)
+    eps = torch.clamp(eps, max=1)
+    lp_buf = (1 - eps) * lp_buf + eps * log_frame
+
+    # Leak: modify base_buf in the fused kernel
+    torch.randn(base_buf.shape, out=rand_buf)
+    leak = leak_rate_hz * noise_rate_arr * (1 - leak_jitter * rand_buf)
+    base_buf = base_buf - delta_time * leak * pos_thres
+
+    diff = lp_buf - base_buf
+    pe = torch.div(torch.relu(diff), pos_thres, rounding_mode="floor").to(torch.int32)
+    ne = torch.div(torch.relu(-diff), neg_thres, rounding_mode="floor").to(torch.int32)
+    return lp_buf, base_buf, pe, ne
+
+
 # Compile on first use; stays None if compile fails
 _compiled_step = None
+_compiled_step_leak = None
 
 
 def get_compiled_step():
@@ -528,3 +565,14 @@ def get_compiled_step():
         except Exception:
             _compiled_step = _fused_photoreceptor_step_compiled
     return _compiled_step
+
+
+def get_compiled_step_leak():
+    """Lazily compile and return the fused step with leak function."""
+    global _compiled_step_leak
+    if _compiled_step_leak is None:
+        try:
+            _compiled_step_leak = torch.compile(_fused_step_with_leak, backend="inductor")
+        except Exception:
+            _compiled_step_leak = _fused_step_with_leak
+    return _compiled_step_leak
