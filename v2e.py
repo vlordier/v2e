@@ -10,11 +10,37 @@ frames from the original video frames.
 # todo refractory period for pixel
 
 import glob
-import typer
-from v2ecore.v2e_args import app as v2e_app
+import argparse
+import importlib
+import sys
 
-if __name__ == "__main__":
-    v2e_app()
+import argcomplete
+import cv2
+import numpy as np
+import os
+from tempfile import TemporaryDirectory
+from engineering_notation import EngNumber as eng  # only from pip
+from tqdm import tqdm
+
+import torch
+
+import v2ecore.desktop as desktop
+from v2ecore.base_synthetic_input import base_synthetic_input
+from v2ecore.v2e_utils import all_images, read_image, \
+    check_lowpass, v2e_quit
+from v2ecore.v2e_utils import set_output_dimension
+from v2ecore.v2e_utils import set_output_folder
+from v2ecore.v2e_utils import ImageFolderReader
+from v2ecore.v2e_args import v2e_args, write_args_info, SmartFormatter
+from v2ecore.v2e_args import v2e_check_dvs_exposure_args
+from v2ecore.v2e_args import NO_SLOWDOWN
+from v2ecore.renderer import EventRenderer, ExposureMode
+from v2ecore.slomo import SuperSloMo
+from v2ecore.emulator import EventEmulator
+from v2ecore.v2e_utils import inputVideoFileDialog
+import logging
+import time
+from typing import Optional, Any
 
 logging.basicConfig()
 root = logging.getLogger()
@@ -53,7 +79,7 @@ except Exception as e:
                    f"Install with 'pip install Gooey if you want a no-arg GUI to invoke v2e'. See README")
 
 
-def get_args() -> Tuple:
+def get_args():
     """ proceses input arguments
     :returns: (args_namespace,other_args,command_line) """
     parser = argparse.ArgumentParser(
@@ -93,18 +119,8 @@ def main():
 
     (args,other_args,command_line) = get_args()
 
-    class PathError(ValueError):
-        pass
-
     # set input file
     input_file = args.input
-    if input_file is None:
-        input_file = os.path.expanduser(input_file)
-        input_file = os.path.expandvars(input_file)
-        p = Path(input_file)
-        if not p.exists():
-            logger.error(f'input file or folder {input_file} does not exist')
-            raise PathError(f'input path {input_file} does not exist')
     synthetic_input:str = args.synthetic_input
 
     if synthetic_input is not None and input_file is not None:
@@ -129,8 +145,6 @@ def main():
         args.overwrite,
         args.output_in_place if (not synthetic_input) else False,
         logger)
-    p = Path(output_folder)
-    p.mkdir(parents=True, exist_ok=True)
 
     # Set output width and height based on the arguments
     output_width, output_height = set_output_dimension(
@@ -242,7 +256,7 @@ def main():
         except ValueError:
             return False
 
-    if input_start_time is not None and input_stop_time is not None and is_float(input_start_time) and is_float(input_stop_time) and input_stop_time <= input_start_time:
+    if not input_start_time is None and not input_stop_time is None and is_float(input_start_time) and is_float(input_stop_time) and input_stop_time<=input_start_time:
         logger.error(f'stop time {input_stop_time} must be later than start time {input_start_time}')
         v2e_quit(1)
 
@@ -253,7 +267,7 @@ def main():
     disable_slomo: bool = args.disable_slomo
     slomo = None  # make it later on
 
-    if not disable_slomo and not auto_timestamp_resolution \
+    if not disable_slomo and auto_timestamp_resolution is False \
             and timestamp_resolution is None:
         logger.error(
             'if --auto_timestamp_resolution=False, '

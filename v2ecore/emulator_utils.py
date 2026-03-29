@@ -79,61 +79,54 @@ def low_pass_filter_numba(log_new_frame, lp_log_frame, inten01, delta_time, cuto
     return out
 
 
-def low_pass_filter_numba(log_new_frame, lp_log_frame, inten01, delta_time, cutoff_hz):
-    """Compute intensity-dependent low-pass filter.
+def low_pass_filter(log_new_frame, lp_log_frame, inten01, delta_time, cutoff_hz):
+    """Compute intensity-dependent 1st-order IIR low-pass filter.
 
-    # Arguments
-        log_new_frame: new frame in lin-log representation.
-        lp_log_frame:
-        inten01: the scaling of filter time constant array, or None to not scale
-        delta_time:
-        cutoff_hz:
+    The time constant is inversely proportional to local pixel intensity,
+    modeling the DVS photoreceptor behavior where brighter regions have
+    shorter time constants.
 
-    # Returns
-        new_lp_log_frame
+    Args:
+        log_new_frame: New frame in lin-log representation [H, W].
+        lp_log_frame: Previous low-pass filtered frame state [H, W].
+        inten01: Normalized intensity array scaling filter time constant [H, W],
+                 or None for uniform filtering.
+        delta_time: Time step since last frame (seconds).
+        cutoff_hz: 3dB cutoff frequency (Hz). If <=0, returns input unchanged.
+
+    Returns:
+        new_lp_log_frame: Updated low-pass filtered frame [H, W].
     """
     if cutoff_hz <= 0:
-        # unchanged
         return log_new_frame
 
-    # else low pass
     tau = 1 / (math.pi * 2 * cutoff_hz)
 
-    # make the update proportional to the local intensity
-    # the more intensity, the shorter the time constant
     if inten01 is not None:
         eps = inten01 * (delta_time / tau)
         max_eps = torch.max(eps)
         if max_eps > 0.3:
-            IIR_MAX_WARNINGS = 10
-            if low_pass_filter.iir_warning_count < IIR_MAX_WARNINGS:
+            max_warnings = 10
+            if low_pass_filter._warning_count < max_warnings:
                 logger.warning(
-                    f"IIR lowpass filter update has large maximum update eps={max_eps:.2f} from delta_time/tau={delta_time:.3g}/{tau:.3g}"
+                    f"IIR lowpass filter update has large maximum update eps={max_eps:.2f}"
+                    f" from delta_time/tau={delta_time:.3g}/{tau:.3g}"
                 )
-                low_pass_filter.iir_warning_count += 1
-                if low_pass_filter.iir_warning_count == IIR_MAX_WARNINGS:
+                low_pass_filter._warning_count += 1
+                if low_pass_filter._warning_count == max_warnings:
                     logger.warning(
-                        "Supressing further warnings about inaccurate IIR lowpass filtering; check timestamp resolution and DVS photoreceptor cutoff frequency"
+                        "Suppressing further IIR lowpass warnings;"
+                        " check timestamp resolution and DVS photoreceptor cutoff frequency"
                     )
-
         eps = torch.clamp(eps, max=1)  # keep filter stable
     else:
         eps = delta_time / tau
 
-    # first internal state is updated
     new_lp_log_frame = (1 - eps) * lp_log_frame + eps * log_new_frame
-
-    # then 2nd internal state (output) is updated from first
-    # Note that observations show that one pole is nearly always dominant,
-    # so the 2nd stage is just copy of first stage
-
-    # (1-eps)*self.lpLogFrame1+eps*self.lpLogFrame0 # was 2nd-order,
-    # now 1st order.
-
     return new_lp_log_frame
 
 
-low_pass_filter.iir_warning_count = 0
+low_pass_filter._warning_count = 0
 
 
 @jit(nopython=True)
