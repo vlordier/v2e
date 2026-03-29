@@ -1179,10 +1179,10 @@ class EventEmulator:
             self.cs_surround_frame = torch.squeeze(h_ten)
 
     def generate_events_batch(self, frames: list, timestamps: list) -> list:
-        """Process multiple frames in a single compiled GPU kernel.
+        """Process multiple frames using batched compiled GPU kernels.
 
-        ~3.6x faster than calling generate_events per frame on MPS.
-        Only supports the simple path (no scidvs/csdvs/photoreceptor_noise/show).
+        Splits frames into chunks of OPTIMAL_BATCH_SIZE and processes each
+        chunk with state accumulation. ~1.7x faster than single-frame on MPS.
 
         Args:
             frames: List of numpy arrays [H, W] (uint8 or float32).
@@ -1204,88 +1204,94 @@ class EventEmulator:
                 results.append(self.generate_events(fr, ts))
             return results
 
-        B = len(frames)
-        device = self.device
-
-        # Stack frames into [B, H, W] tensor
-        frames_t = torch.stack([
-            torch.tensor(fr, dtype=torch.float32, device=device) for fr in frames
-        ])
-        intens_t = torch.stack([
-            rescale_intensity_frame(f.clone().detach()) for f in frames_t
-        ])
-
-        # Pre-generate random values for leak
-        rand_vals = torch.randn(B, self.output_height, self.output_width,
-                                dtype=torch.float32, device=device)
-
-        tau = 1 / (math.pi * 2 * self.cutoff_hz)
-        dt = timestamps[0] - self.t_previous  # simplified: use uniform dt
-
-        compiled_fn = get_compiled_batched()
-        lp_bufs, base_bufs, pe_batch, ne_batch = compiled_fn(
-            frames_t, self.lp_log_frame, self.base_log_frame,
-            self.pos_thres, self.neg_thres, intens_t,
-            self.noise_rate_array, rand_vals,
-            dt, tau, self.leak_rate_hz, self.leak_jitter_fraction)
-
-        # Update state from last frame in batch
-        self.lp_log_frame = lp_bufs[-1]
-        self.base_log_frame = base_bufs[-1]
-
-        # Convert event maps to event arrays
+        OPTIMAL_BATCH = 2  # sweet spot for MPS state-accumulating batches
         results = []
-        for i in range(B):
-            pe = pe_batch[i]
-            ne = ne_batch[i]
-            max_evts = max(pe.max(), ne.max()).item()
-            self.t_previous = timestamps[i]
 
-            if max_evts == 0:
-                if self.no_events_warning_count < 100:
-                    logger.warning(f'no signal events for frame #{self.frame_counter + i} at t={timestamps[i]:.4f}s')
-                    self.no_events_warning_count += 1
-                results.append(None)
-                continue
+        for chunk_start in range(0, len(frames), OPTIMAL_BATCH):
+            chunk_end = min(chunk_start + OPTIMAL_BATCH, len(frames))
+            chunk_frames = frames[chunk_start:chunk_end]
+            chunk_ts = timestamps[chunk_start:chunk_end]
+            B = len(chunk_frames)
+            device = self.device
 
-            # Generate events from pe/ne
-            events_list = []
-            min_ts_steps = max_evts
-            ts_step = dt / min_ts_steps
-            ts_vals = torch.linspace(
-                self.t_previous + ts_step, timestamps[i],
-                steps=min_ts_steps, dtype=torch.float32, device=device)
+            # Stack frames into [B, H, W] tensor
+            frames_t = torch.stack([
+                torch.tensor(fr, dtype=torch.float32, device=device) for fr in chunk_frames
+            ])
+            intens_t = torch.stack([
+                rescale_intensity_frame(f.clone().detach()) for f in frames_t
+            ])
 
-            for j in range(int(max_evts)):
-                pos_cord = (pe >= j + 1)
-                neg_cord = (ne >= j + 1)
-                pos_xy = pos_cord.nonzero(as_tuple=True)
-                neg_xy = neg_cord.nonzero(as_tuple=True)
-                n = pos_xy[0].shape[0] + neg_xy[0].shape[0]
-                if n > 0:
-                    evts = torch.ones((n, 4), dtype=torch.float32, device=device)
-                    evts[:, 0] = ts_vals[j] if j < len(ts_vals) else ts_vals[-1]
-                    np_ = pos_xy[0].shape[0]
-                    if np_ > 0:
-                        evts[:np_, 1] = pos_xy[1].float()
-                        evts[:np_, 2] = pos_xy[0].float()
-                    nn_ = neg_xy[0].shape[0]
-                    if nn_ > 0:
-                        evts[np_:, 1] = neg_xy[1].float()
-                        evts[np_:, 2] = neg_xy[0].float()
-                        evts[np_:, 3] = -1
-                    events_list.append(evts)
+            # Pre-generate random values for leak
+            rand_vals = torch.randn(B, self.output_height, self.output_width,
+                                    dtype=torch.float32, device=device)
 
-            if events_list:
-                events = torch.cat(events_list)
-                events = events.cpu().data.numpy()
-                self.num_events_total += len(events)
-                self.num_events_on += int((events[:, 3] == 1).sum())
-                self.num_events_off += int((events[:, 3] == -1).sum())
-                results.append(events)
-            else:
-                results.append(None)
+            tau = 1 / (math.pi * 2 * self.cutoff_hz)
+            dt = chunk_ts[0] - self.t_previous
 
-            self.frame_counter += 1
+            compiled_fn = get_compiled_batched()
+            lp_bufs, base_bufs, pe_batch, ne_batch = compiled_fn(
+                frames_t, self.lp_log_frame, self.base_log_frame,
+                self.pos_thres, self.neg_thres, intens_t,
+                self.noise_rate_array, rand_vals,
+                dt, tau, self.leak_rate_hz, self.leak_jitter_fraction)
+
+            # Update state from last frame in chunk
+            self.lp_log_frame = lp_bufs[-1]
+            self.base_log_frame = base_bufs[-1]
+
+            # Convert event maps to event arrays
+            for i in range(B):
+                pe = pe_batch[i]
+                ne = ne_batch[i]
+                max_evts = max(pe.max(), ne.max()).item()
+                self.t_previous = chunk_ts[i]
+
+                if max_evts == 0:
+                    if self.no_events_warning_count < 100:
+                        logger.warning(f'no signal events for frame #{self.frame_counter} at t={chunk_ts[i]:.4f}s')
+                        self.no_events_warning_count += 1
+                    results.append(None)
+                    self.frame_counter += 1
+                    continue
+
+                # Generate events from pe/ne
+                events_list = []
+                ts_step = dt / max_evts
+                ts_vals = torch.linspace(
+                    self.t_previous + ts_step, chunk_ts[i],
+                    steps=max_evts, dtype=torch.float32, device=device)
+
+                for j in range(int(max_evts)):
+                    pos_cord = (pe >= j + 1)
+                    neg_cord = (ne >= j + 1)
+                    pos_xy = pos_cord.nonzero(as_tuple=True)
+                    neg_xy = neg_cord.nonzero(as_tuple=True)
+                    n = pos_xy[0].shape[0] + neg_xy[0].shape[0]
+                    if n > 0:
+                        evts = torch.ones((n, 4), dtype=torch.float32, device=device)
+                        evts[:, 0] = ts_vals[j] if j < len(ts_vals) else ts_vals[-1]
+                        np_ = pos_xy[0].shape[0]
+                        if np_ > 0:
+                            evts[:np_, 1] = pos_xy[1].float()
+                            evts[:np_, 2] = pos_xy[0].float()
+                        nn_ = neg_xy[0].shape[0]
+                        if nn_ > 0:
+                            evts[np_:, 1] = neg_xy[1].float()
+                            evts[np_:, 2] = neg_xy[0].float()
+                            evts[np_:, 3] = -1
+                        events_list.append(evts)
+
+                if events_list:
+                    events = torch.cat(events_list)
+                    events = events.cpu().data.numpy()
+                    self.num_events_total += len(events)
+                    self.num_events_on += int((events[:, 3] == 1).sum())
+                    self.num_events_off += int((events[:, 3] == -1).sum())
+                    results.append(events)
+                else:
+                    results.append(None)
+
+                self.frame_counter += 1
 
         return results

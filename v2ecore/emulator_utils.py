@@ -567,25 +567,44 @@ def _fused_batched_step(
 ) -> tuple:
     """Batched fused pipeline for [B, H, W] frame batches.
 
-    Processes B frames simultaneously in one compiled GPU kernel,
-    giving ~3.6x per-frame speedup vs single-frame compiled step.
-    lp_buf and base_buf are broadcast across the batch dimension.
+    Processes B frames sequentially with state accumulation (each frame's
+    lp_buf and base_buf feed into the next). All element-wise ops are fused
+    into compiled GPU kernels. The batch dimension allows the compiler to
+    optimize memory access patterns across frames.
+
+    Returns:
+        (lp_bufs, base_bufs, pe_batch, ne_batch): All [B, H, W] tensors.
     """
-    # lin_log
+    B = frames_b.shape[0]
+    # lin_log all frames at once (independent)
     log_frames = torch.where(frames_b <= _LIN_LOG_THRESHOLD, frames_b * _LIN_LOG_F, torch.log(frames_b))
     log_frames = torch.round(log_frames * _ROUNDING) / _ROUNDING
-    # lowpass
+
+    # Pre-compute constants
     eps = intens_b * (delta_time / tau)
     eps = torch.clamp(eps, max=1)
-    lp_buf_b = (1 - eps) * lp_buf.unsqueeze(0) + eps * log_frames
-    # leak
-    leak = leak_rate_hz * noise_rate_arr.unsqueeze(0) * (1 - leak_jitter * rand_vals_b)
-    base_buf_b = base_buf.unsqueeze(0) - delta_time * leak * pos_thres.unsqueeze(0)
-    # event map
-    diff = lp_buf_b - base_buf_b
-    pe = torch.div(torch.relu(diff), pos_thres.unsqueeze(0), rounding_mode="floor").to(torch.int32)
-    ne = torch.div(torch.relu(-diff), neg_thres.unsqueeze(0), rounding_mode="floor").to(torch.int32)
-    return lp_buf_b, base_buf_b, pe, ne
+    leak = leak_rate_hz * noise_rate_arr * (1 - leak_jitter * rand_vals_b)
+    delta_leak = delta_time * leak * pos_thres
+
+    # Process frames sequentially with state accumulation
+    lp_bufs = torch.empty_like(frames_b)
+    base_bufs = torch.empty_like(frames_b)
+    pe_batch = torch.empty(B, *lp_buf.shape, dtype=torch.int32, device=lp_buf.device)
+    ne_batch = torch.empty(B, *lp_buf.shape, dtype=torch.int32, device=lp_buf.device)
+
+    for i in range(B):
+        # lowpass
+        lp_buf = (1 - eps[i]) * lp_buf + eps[i] * log_frames[i]
+        # leak
+        base_buf = base_buf - delta_leak[i]
+        # event map
+        diff = lp_buf - base_buf
+        pe_batch[i] = torch.div(torch.relu(diff), pos_thres, rounding_mode="floor").to(torch.int32)
+        ne_batch[i] = torch.div(torch.relu(-diff), neg_thres, rounding_mode="floor").to(torch.int32)
+        lp_bufs[i] = lp_buf
+        base_bufs[i] = base_buf
+
+    return lp_bufs, base_bufs, pe_batch, ne_batch
 
 
 _compiled_batched = None
