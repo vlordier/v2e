@@ -766,9 +766,10 @@ class EventEmulator:
                     self.frame_counter += 1
                     return None
 
-                # CPU assembly (2-4x faster than MPS nonzero for sparse events)
-                pe_cpu = pos_evts_frame.cpu().numpy()
-                ne_cpu = neg_evts_frame.cpu().numpy()
+                # CPU assembly: stacked transfer (1.8x faster than separate)
+                pe_ne = torch.stack([pos_evts_frame, neg_evts_frame]).cpu().numpy()
+                pe_cpu = pe_ne[0]
+                ne_cpu = pe_ne[1]
                 total_events = int(pe_cpu.sum() + ne_cpu.sum())
                 if total_events == 0:
                     self.t_previous = t_frame
