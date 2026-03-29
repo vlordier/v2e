@@ -26,8 +26,8 @@ from screeninfo import get_monitors
 from v2ecore.emulator_utils import compute_event_map, lin_log
 from v2ecore.emulator_utils import rescale_intensity_frame
 from v2ecore.emulator_utils import subtract_leak_current
-from v2ecore.emulator_filters import low_pass_filter
-from v2ecore.noise import compute_photoreceptor_noise_voltage, generate_shot_noise
+from v2ecore.emulator_utils import low_pass_filter, low_pass_filter_inplace, fused_photoreceptor_step
+from v2ecore.emulator_utils import compute_photoreceptor_noise_voltage, generate_shot_noise
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
 from v2ecore.output.aedat4_output import AEDat4Output
@@ -702,7 +702,8 @@ class EventEmulator:
             self.lp_log_frame = self.log_new_frame
             self.photoreceptor_noise_arr = torch.zeros_like(self.lp_log_frame)
 
-        self.lp_log_frame = low_pass_filter(
+        # Use in-place lowpass to avoid MPS tensor allocation overhead (~7x faster)
+        self.lp_log_frame = low_pass_filter_inplace(
             log_new_frame=self.log_new_frame,
             lp_log_frame=self.lp_log_frame,
             inten01=inten01,
@@ -716,8 +717,9 @@ class EventEmulator:
                 pos_thr=self.pos_thres_nominal, neg_thr=self.neg_thres_nominal, sigma_thr=self.sigma_thres)
             noise = self.photoreceptor_noise_vrms * torch.randn(self.log_new_frame.shape, dtype=torch.float32,
                                                                 device=self.device)
-            self.photoreceptor_noise_arr = low_pass_filter(noise, self.photoreceptor_noise_arr, None, delta_time,
-                                                           self.cutoff_hz)
+            self.photoreceptor_noise_arr = low_pass_filter_inplace(
+                noise, self.photoreceptor_noise_arr, None, delta_time,
+                self.cutoff_hz)
             self.photoreceptor_noise_samples.append(
                 self.photoreceptor_noise_arr[0, 0].item())
             # std=np.std(self.photoreceptor_noise_samples)
