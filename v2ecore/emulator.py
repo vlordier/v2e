@@ -795,12 +795,15 @@ class EventEmulator:
                     events[:np_, 1] = np.repeat(pos_x, pos_counts)
                     events[:np_, 2] = np.repeat(pos_y, pos_counts)
                     events[:np_, 3] = 1.0
-                    # Fast timestamp offsets via cumsum+searchsorted (5x faster than concatenate)
-                    cs = np.cumsum(pos_counts)
-                    starts = cs - pos_counts
-                    indices = np.arange(np_)
-                    pixel_idx = np.searchsorted(cs, indices, side='right')
-                    events[:np_, 0] = ts_np[indices - starts[pixel_idx]]
+                    # Fast timestamp offsets
+                    if np.all(pos_counts == 1):
+                        events[:np_, 0] = ts_np[0]  # all at first timestamp
+                    else:
+                        cs = np.cumsum(pos_counts)
+                        starts = cs - pos_counts
+                        indices = np.arange(np_)
+                        pixel_idx = np.searchsorted(cs, indices, side='right')
+                        events[:np_, 0] = ts_np[indices - starts[pixel_idx]]
                 if nn_ > 0:
                     neg_y, neg_x = np.divmod(neg_idx, W)
                     neg_x = neg_x.astype(np.float32)
@@ -808,11 +811,14 @@ class EventEmulator:
                     events[np_:, 1] = np.repeat(neg_x, neg_counts)
                     events[np_:, 2] = np.repeat(neg_y, neg_counts)
                     events[np_:, 3] = -1.0
-                    cs = np.cumsum(neg_counts)
-                    starts = cs - neg_counts
-                    indices = np.arange(nn_)
-                    pixel_idx = np.searchsorted(cs, indices, side='right')
-                    events[np_:, 0] = ts_np[indices - starts[pixel_idx]]
+                    if np.all(neg_counts == 1):
+                        events[np_:, 0] = ts_np[0]
+                    else:
+                        cs = np.cumsum(neg_counts)
+                        starts = cs - neg_counts
+                        indices = np.arange(nn_)
+                        pixel_idx = np.searchsorted(cs, indices, side='right')
+                        events[np_:, 0] = ts_np[indices - starts[pixel_idx]]
                 self.num_events_on += int((events[:, 3] == 1).sum())
                 self.num_events_off += int((events[:, 3] == -1).sum())
                 self.num_events_total += len(events)
