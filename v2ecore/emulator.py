@@ -208,6 +208,7 @@ class EventEmulator:
 
         # non-idealities
         self.cutoff_hz = cutoff_hz
+        self.tau = 1 / (math.pi * 2 * cutoff_hz) if cutoff_hz > 0 else float('inf')
         self.leak_rate_hz = leak_rate_hz
         self.refractory_period_s = refractory_period_s
         self.shot_noise_rate_hz = shot_noise_rate_hz
@@ -703,7 +704,7 @@ class EventEmulator:
                 # Fully fused: lin_log + lowpass + leak + diff + event_map
                 # Pre-generate random values outside compiled kernel for max fusion
                 self._rand_buf.normal_()
-                tau = 1 / (math.pi * 2 * self.cutoff_hz)
+                tau = self.tau
                 compiled_fn = get_compiled_step_leak()
                 self.lp_log_frame, self.base_log_frame, pos_evts_frame, neg_evts_frame = compiled_fn(
                     self.new_frame, self.lp_log_frame, self.base_log_frame,
@@ -712,7 +713,7 @@ class EventEmulator:
                     delta_time, tau, self.leak_rate_hz, self.leak_jitter_fraction)
             elif inten01 is not None:
                 # Fused: lin_log + lowpass + diff + event_map (no leak)
-                tau = 1 / (math.pi * 2 * self.cutoff_hz)
+                tau = self.tau
                 compiled_fn = get_compiled_step()
                 self.lp_log_frame, pos_evts_frame, neg_evts_frame = compiled_fn(
                     self.new_frame, self.lp_log_frame, self.base_log_frame,
@@ -1317,7 +1318,7 @@ class EventEmulator:
             rand_vals = torch.randn(B, self.output_height, self.output_width,
                                     dtype=torch.float32, device=device)
 
-            tau = 1 / (math.pi * 2 * self.cutoff_hz)
+            tau = self.tau
             dt = chunk_ts[0] - self.t_previous
 
             compiled_fn = get_compiled_batched()
