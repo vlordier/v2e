@@ -28,6 +28,7 @@ from v2ecore.emulator_utils import rescale_intensity_frame
 from v2ecore.emulator_utils import subtract_leak_current
 from v2ecore.emulator_utils import low_pass_filter, low_pass_filter_inplace, fused_photoreceptor_step
 from v2ecore.emulator_utils import compute_photoreceptor_noise_voltage, generate_shot_noise
+from v2ecore.emulator_utils import get_compiled_step
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
 from v2ecore.output.aedat4_output import AEDat4Output
@@ -678,123 +679,135 @@ class EventEmulator:
         if self.log_input and new_frame.dtype != np.float32:
             logger.warning('log_frame is True but input frome is not np.float32 datatype')
 
-        # convert into torch tensor
-        self.new_frame = torch.tensor(new_frame, dtype=torch.float64,
+        # convert into torch tensor (float32 for MPS compatibility)
+        self.new_frame = torch.tensor(new_frame, dtype=torch.float32,
                                       device=self.device)
-        # lin-log mapping, if input is not already float32 log input
-        self.log_new_frame = lin_log(self.new_frame) if not self.log_input else self.new_frame
 
         inten01 = None  # define for later
-        if self.cutoff_hz > 0 or self.shot_noise_rate_hz > 0:  # will use later
-            # Time constant of the filter is proportional to
-            # the intensity value (with offset to deal with DN=0)
-            # limit max time constant to ~1/10 of white intensity level
-            inten01 = rescale_intensity_frame(self.new_frame.clone().detach())  # TODO assumes 8 bit
+        if self.cutoff_hz > 0 or self.shot_noise_rate_hz > 0:
+            inten01 = rescale_intensity_frame(self.new_frame.clone().detach())
 
-        # Apply nonlinear lowpass filter here.
-        # Filter is a 1st order lowpass IIR (can be 2nd order)
-        # that uses two internal state variables
-        # to store stages of cascaded first order RC filters.
-        # Time constant of the filter is proportional to
-        # the intensity value (with offset to deal with DN=0)
-        if self.base_log_frame is None:
-            # initialize 1st order IIR to first input
-            self.lp_log_frame = self.log_new_frame
-            self.photoreceptor_noise_arr = torch.zeros_like(self.lp_log_frame)
+        # --- Fast path: compiled fused pipeline (no scidvs/csdvs/photoreceptor_noise) ---
+        if (self.base_log_frame is not None
+                and not self.scidvs
+                and not self.csdvs_enabled
+                and not self.photoreceptor_noise
+                and self.show_dvs_model_state is None):
 
-        # Use in-place lowpass to avoid MPS tensor allocation overhead (~7x faster)
-        self.lp_log_frame = low_pass_filter_inplace(
-            log_new_frame=self.log_new_frame,
-            lp_log_frame=self.lp_log_frame,
-            inten01=inten01,
-            delta_time=delta_time,
-            cutoff_hz=self.cutoff_hz)
-
-        # add photoreceptor noise if we are using photoreceptor noise to create shot noise
-        if self.photoreceptor_noise and not self.base_log_frame is None:  # only add noise after the initial values are memorized and we can properly lowpass filter the noise
-            self.photoreceptor_noise_vrms = compute_photoreceptor_noise_voltage(
-                shot_noise_rate_hz=self.shot_noise_rate_hz, f3db=self.cutoff_hz, sample_rate_hz=1 / delta_time,
-                pos_thr=self.pos_thres_nominal, neg_thr=self.neg_thres_nominal, sigma_thr=self.sigma_thres)
-            noise = self.photoreceptor_noise_vrms * torch.randn(self.log_new_frame.shape, dtype=torch.float32,
-                                                                device=self.device)
-            self.photoreceptor_noise_arr = low_pass_filter_inplace(
-                noise, self.photoreceptor_noise_arr, None, delta_time,
-                self.cutoff_hz)
-            self.photoreceptor_noise_samples.append(
-                self.photoreceptor_noise_arr[0, 0].item())
-            # std=np.std(self.photoreceptor_noise_samples)
-
-        # surround computations by time stepping the diffuser
-        if self.csdvs_enabled:
-            self._update_csdvs(delta_time)
-
-        if self.base_log_frame is None:
-            self._init(new_frame)
-            if not self.csdvs_enabled:
-                self.base_log_frame = self.lp_log_frame
+            if inten01 is not None:
+                tau = 1 / (math.pi * 2 * self.cutoff_hz)
+                compiled_fn = get_compiled_step()
+                self.lp_log_frame, pos_evts_frame, neg_evts_frame = compiled_fn(
+                    self.new_frame, self.lp_log_frame, self.base_log_frame,
+                    self.pos_thres, self.neg_thres, inten01, delta_time, tau)
             else:
-                self.base_log_frame = self.lp_log_frame - self.cs_surround_frame  # init base log frame (input to diff) to DC value, TODO check might not be correct to avoid transient
+                # No lowpass: just lin_log + diff + event_map
+                self.log_new_frame = lin_log(self.new_frame)
+                self.diff_frame = self.log_new_frame - self.base_log_frame
+                pos_evts_frame, neg_evts_frame = compute_event_map(
+                    self.diff_frame, self.pos_thres, self.neg_thres)
 
-            return None  # on first input frame we just setup the state of all internal nodes of pixels
+            # Leak events
+            if self.leak_rate_hz > 0:
+                self.base_log_frame = subtract_leak_current(
+                    base_log_frame=self.base_log_frame,
+                    leak_rate_hz=self.leak_rate_hz,
+                    delta_time=delta_time,
+                    pos_thres=self.pos_thres,
+                    leak_jitter_fraction=self.leak_jitter_fraction,
+                    noise_rate_array=self.noise_rate_array)
 
-        if self.scidvs:
-            if self.scidvs_highpass is None:
-                self.scidvs_highpass = torch.zeros_like(self.lp_log_frame)
-                self.scidvs_previous_photo = torch.clone(self.lp_log_frame).detach()
-            self.scidvs_highpass += (self.lp_log_frame - self.scidvs_previous_photo) \
-                                    - delta_time * self.scidvs_dvdt(self.scidvs_highpass,self.scidvs_tau_arr)
-            self.scidvs_previous_photo = torch.clone(self.lp_log_frame)
+            max_num_events_any_pixel = max(pos_evts_frame.max(),
+                                           neg_evts_frame.max()).item()
+            if max_num_events_any_pixel > 100:
+                logger.warning(f'Too many events: num_iter={max_num_events_any_pixel}>100')
 
-        # Leak events: switch in diff change amp leaks at some rate
-        # equivalent to some hz of ON events.
-        # Actual leak rate depends on threshold for each pixel.
-        # We want nominal rate leak_rate_Hz, so
-        # R_l=(dI/dt)/Theta_on, so
-        # R_l*Theta_on=dI/dt, so
-        # dI=R_l*Theta_on*dt
-        if self.leak_rate_hz > 0:
-            self.base_log_frame = subtract_leak_current(
-                base_log_frame=self.base_log_frame,
-                leak_rate_hz=self.leak_rate_hz,
-                delta_time=delta_time,
-                pos_thres=self.pos_thres,
-                leak_jitter_fraction=self.leak_jitter_fraction,
-                noise_rate_array=self.noise_rate_array)
-
-        # log intensity (brightness) change from memorized values is computed
-        # from the difference between new input
-        # (from lowpass of lin-log input) and the memorized value
-
-        # take input from either photoreceptor or amplified high pass nonlinear filtered scidvs
-        photoreceptor = EventEmulator.SCIDVS_GAIN * self.scidvs_highpass if self.scidvs else self.lp_log_frame
-
-        if not self.csdvs_enabled:
-            self.diff_frame = photoreceptor + self.photoreceptor_noise_arr - self.base_log_frame
+            # Skip to event generation (lines below)
         else:
-            self.c_minus_s_frame = photoreceptor + self.photoreceptor_noise_arr - self.cs_surround_frame
-            self.diff_frame = self.c_minus_s_frame - self.base_log_frame
+            # --- Full path: scidvs, csdvs, photoreceptor_noise, or debug ---
+            # lin-log mapping
+            self.log_new_frame = lin_log(self.new_frame) if not self.log_input else self.new_frame
 
-        if not self.show_dvs_model_state is None:
-            for s in self.show_dvs_model_state:
-                if not s in self.dont_show_list:
-                    f = getattr(self, s, None)
-                    if f is None:
-                        logger.error(f'{s} does not exist so we cannot show it')
-                        self.dont_show_list.append(s)
-                    else:
-                        self._show(f, s)  # show the frame f with name s
-            k = cv2.waitKey(30)
-            if k == 27 or k == ord('x'):
-                v2e_quit()
+            if self.base_log_frame is None:
+                self.lp_log_frame = self.log_new_frame
+                self.photoreceptor_noise_arr = torch.zeros_like(self.lp_log_frame)
 
-        # generate event map
-        # print(f'\ndiff_frame max={torch.max(self.diff_frame)} pos_thres mean={torch.mean(self.pos_thres)} expect {int(torch.max(self.diff_frame)/torch.mean(self.pos_thres))} max events')
-        pos_evts_frame, neg_evts_frame = compute_event_map(
-            self.diff_frame, self.pos_thres, self.neg_thres)
-        max_num_events_any_pixel = max(pos_evts_frame.max(),
-                                       neg_evts_frame.max()).item()  # scalar via implicit MPS→CPU
-        if max_num_events_any_pixel > 100:
-            logger.warning(f'Too many events generated for this frame: num_iter={max_num_events_any_pixel}>100 events')
+            self.lp_log_frame = low_pass_filter_inplace(
+                log_new_frame=self.log_new_frame,
+                lp_log_frame=self.lp_log_frame,
+                inten01=inten01,
+                delta_time=delta_time,
+                cutoff_hz=self.cutoff_hz)
+
+            # photoreceptor noise
+            if self.photoreceptor_noise and self.base_log_frame is not None:
+                self.photoreceptor_noise_vrms = compute_photoreceptor_noise_voltage(
+                    shot_noise_rate_hz=self.shot_noise_rate_hz, f3db=self.cutoff_hz,
+                    sample_rate_hz=1 / delta_time,
+                    pos_thr=self.pos_thres_nominal, neg_thr=self.neg_thres_nominal,
+                    sigma_thr=self.sigma_thres)
+                noise = self.photoreceptor_noise_vrms * torch.randn(
+                    self.log_new_frame.shape, dtype=torch.float32, device=self.device)
+                self.photoreceptor_noise_arr = low_pass_filter_inplace(
+                    noise, self.photoreceptor_noise_arr, None, delta_time, self.cutoff_hz)
+                self.photoreceptor_noise_samples.append(self.photoreceptor_noise_arr[0, 0].item())
+
+            # surround
+            if self.csdvs_enabled:
+                self._update_csdvs(delta_time)
+
+            if self.base_log_frame is None:
+                self._init(new_frame)
+                if not self.csdvs_enabled:
+                    self.base_log_frame = self.lp_log_frame
+                else:
+                    self.base_log_frame = self.lp_log_frame - self.cs_surround_frame
+                return None
+
+            if self.scidvs:
+                if self.scidvs_highpass is None:
+                    self.scidvs_highpass = torch.zeros_like(self.lp_log_frame)
+                    self.scidvs_previous_photo = torch.clone(self.lp_log_frame).detach()
+                self.scidvs_highpass += (self.lp_log_frame - self.scidvs_previous_photo) \
+                                        - delta_time * self.scidvs_dvdt(self.scidvs_highpass, self.scidvs_tau_arr)
+                self.scidvs_previous_photo = torch.clone(self.lp_log_frame)
+
+            if self.leak_rate_hz > 0:
+                self.base_log_frame = subtract_leak_current(
+                    base_log_frame=self.base_log_frame,
+                    leak_rate_hz=self.leak_rate_hz,
+                    delta_time=delta_time,
+                    pos_thres=self.pos_thres,
+                    leak_jitter_fraction=self.leak_jitter_fraction,
+                    noise_rate_array=self.noise_rate_array)
+
+            photoreceptor = EventEmulator.SCIDVS_GAIN * self.scidvs_highpass if self.scidvs else self.lp_log_frame
+
+            if not self.csdvs_enabled:
+                self.diff_frame = photoreceptor + self.photoreceptor_noise_arr - self.base_log_frame
+            else:
+                self.c_minus_s_frame = photoreceptor + self.photoreceptor_noise_arr - self.cs_surround_frame
+                self.diff_frame = self.c_minus_s_frame - self.base_log_frame
+
+            if self.show_dvs_model_state is not None:
+                for s in self.show_dvs_model_state:
+                    if s not in self.dont_show_list:
+                        f = getattr(self, s, None)
+                        if f is None:
+                            logger.error(f'{s} does not exist so we cannot show it')
+                            self.dont_show_list.append(s)
+                        else:
+                            self._show(f, s)
+                k = cv2.waitKey(30)
+                if k == 27 or k == ord('x'):
+                    v2e_quit()
+
+            pos_evts_frame, neg_evts_frame = compute_event_map(
+                self.diff_frame, self.pos_thres, self.neg_thres)
+            max_num_events_any_pixel = max(pos_evts_frame.max(),
+                                           neg_evts_frame.max()).item()
+            if max_num_events_any_pixel > 100:
+                logger.warning(f'Too many events: num_iter={max_num_events_any_pixel}>100')
 
         # to assemble all events
         events = torch.empty((0, 4), dtype=torch.float32, device=self.device)  # ndarray shape (N,4) where N is the number of events are rows are [t,x,y,p]
