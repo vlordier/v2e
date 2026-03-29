@@ -28,7 +28,8 @@ from v2ecore.emulator_utils import rescale_intensity_frame
 from v2ecore.emulator_utils import subtract_leak_current
 from v2ecore.emulator_utils import low_pass_filter, low_pass_filter_inplace, fused_photoreceptor_step
 from v2ecore.emulator_utils import compute_photoreceptor_noise_voltage, generate_shot_noise
-from v2ecore.emulator_utils import get_compiled_step, get_compiled_step_leak, get_compiled_batched
+from v2ecore.emulator_utils import get_compiled_step, get_compiled_step_leak, get_compiled_step_leak_sn, get_compiled_batched
+from v2ecore.emulator_utils import asm_events_cpu
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
 from v2ecore.output.aedat4_output import AEDat4Output

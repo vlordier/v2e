@@ -551,6 +551,53 @@ def _fused_step_with_leak(
     return lp_buf, base_buf, pe, ne
 
 
+def _fused_step_with_leak_and_shot_noise(
+    frame: torch.Tensor,
+    lp_buf: torch.Tensor,
+    base_buf: torch.Tensor,
+    pos_thres: torch.Tensor,
+    neg_thres: torch.Tensor,
+    inten01: torch.Tensor,
+    noise_rate_arr: torch.Tensor,
+    rand_vals: torch.Tensor,
+    sn_rand: torch.Tensor,
+    pos_pre: torch.Tensor,
+    neg_pre: torch.Tensor,
+    delta_time: float,
+    tau: float,
+    leak_rate_hz: float,
+    leak_jitter: float,
+    sn_rate: float,
+    sn_factor: float,
+) -> tuple:
+    """Fully fused pipeline: lin_log + lowpass + leak + diff + event_map + shot noise.
+
+    Eliminates two separate kernel launches (leak was already fused, now shot noise too).
+    All element-wise ops compiled into a single GPU kernel by inductor.
+    """
+    log_frame = torch.where(frame <= _LIN_LOG_THRESHOLD, frame * _LIN_LOG_F, torch.log(frame))
+    log_frame = torch.round(log_frame * _ROUNDING) / _ROUNDING
+    eps = inten01 * (delta_time / tau)
+    eps = torch.clamp(eps, max=1)
+    lp_buf = (1 - eps) * lp_buf + eps * log_frame
+
+    # Leak
+    leak = leak_rate_hz * noise_rate_arr * (1 - leak_jitter * rand_vals)
+    base_buf = base_buf - delta_time * leak * pos_thres
+
+    # Event map
+    diff = lp_buf - base_buf
+    pe = torch.div(torch.relu(diff), pos_thres, rounding_mode="floor").to(torch.int32)
+    ne = torch.div(torch.relu(-diff), neg_thres, rounding_mode="floor").to(torch.int32)
+
+    # Shot noise
+    sf = ((sn_rate / 2) * delta_time) * ((sn_factor - 1) * inten01 + 1)
+    shot_on = torch.gt(sn_rand, 1 - sf * pos_pre)
+    shot_off = torch.lt(sn_rand, sf * neg_pre)
+
+    return lp_buf, base_buf, pe, ne, shot_on, shot_off
+
+
 def _fused_batched_step(
     frames_b: torch.Tensor,
     lp_buf: torch.Tensor,
@@ -643,3 +690,43 @@ def get_compiled_step_leak():
         except Exception:
             _compiled_step_leak = _fused_step_with_leak
     return _compiled_step_leak
+
+
+_compiled_step_leak_sn = None
+
+
+def get_compiled_step_leak_sn():
+    """Lazily compile and return the fused step with leak + shot noise."""
+    global _compiled_step_leak_sn
+    if _compiled_step_leak_sn is None:
+        try:
+            _compiled_step_leak_sn = torch.compile(_fused_step_with_leak_and_shot_noise, mode="max-autotune")
+        except Exception:
+            _compiled_step_leak_sn = _fused_step_with_leak_and_shot_noise
+    return _compiled_step_leak_sn
+
+
+def asm_events_cpu(pe, ne, ts_val):
+    """Assemble event array on CPU from MPS event count tensors.
+
+    Transfers pe/ne to CPU and uses numpy nonzero, which is faster
+    than MPS nonzero for sparse event counts.
+    """
+    import numpy as np
+    pe_np = pe.cpu().numpy()
+    ne_np = ne.cpu().numpy()
+    pos_y, pos_x = (pe_np > 0).nonzero()
+    neg_y, neg_x = (ne_np > 0).nonzero()
+    n = len(pos_y) + len(neg_y)
+    if n == 0:
+        return None
+    evts = np.empty((n, 4), dtype=np.float32)
+    evts[:, 0] = ts_val
+    np_ = len(pos_y)
+    evts[:np_, 1] = pos_x.astype(np.float32)
+    evts[:np_, 2] = pos_y.astype(np.float32)
+    if n - np_ > 0:
+        evts[np_:, 1] = neg_x.astype(np.float32)
+        evts[np_:, 2] = neg_y.astype(np.float32)
+        evts[np_:, 3] = -1
+    return evts
