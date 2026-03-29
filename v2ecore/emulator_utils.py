@@ -1,4 +1,7 @@
-"""Emulator utilities for DVS event computation.
+"""Collections of emulator utilities.
+
+Author: Yuhuang Hu, Tobi Delbruck
+Email : yuhuang.hu@ini.uzh.ch, tobi@ini.uzh.ch
 
 Provides torch-based functions for:
 - lin_log mapping (linear to logarithmic intensity)
