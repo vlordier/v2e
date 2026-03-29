@@ -684,12 +684,13 @@ class EventEmulator:
             logger.warning('log_frame is True but input frome is not np.float32 datatype')
 
         # convert into torch tensor (float32 for MPS compatibility)
-        self.new_frame = torch.tensor(new_frame, dtype=torch.float32,
-                                      device=self.device)
+        self.new_frame = torch.from_numpy(
+            np.ascontiguousarray(new_frame)
+        ).float().to(self.device, non_blocking=True)
 
         inten01 = None  # define for later
         if self.cutoff_hz > 0 or self.shot_noise_rate_hz > 0:
-            inten01 = rescale_intensity_frame(self.new_frame.clone().detach())
+            inten01 = rescale_intensity_frame(self.new_frame)
 
         # --- Fast path: compiled fused pipeline (no scidvs/csdvs/photoreceptor_noise) ---
         if (self.base_log_frame is not None
@@ -1305,10 +1306,11 @@ class EventEmulator:
 
             # Stack frames into [B, H, W] tensor
             frames_t = torch.stack([
-                torch.tensor(fr, dtype=torch.float32, device=device) for fr in chunk_frames
+                torch.from_numpy(np.ascontiguousarray(fr)).float().to(device, non_blocking=True)
+                for fr in chunk_frames
             ])
             intens_t = torch.stack([
-                rescale_intensity_frame(f.clone().detach()) for f in frames_t
+                rescale_intensity_frame(f) for f in frames_t
             ])
 
             # Pre-generate random values for leak
