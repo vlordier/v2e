@@ -10,7 +10,11 @@ frames from the original video frames.
 # todo refractory period for pixel
 
 import glob
-import typer\nfrom v2ecore.v2e_args import app as v2e_app\n\nif __name__ == \"__main__\":\n    v2e_app()
+import typer
+from v2ecore.v2e_args import app as v2e_app
+
+if __name__ == "__main__":
+    v2e_app()
 
 logging.basicConfig()
 root = logging.getLogger()
@@ -49,7 +53,13 @@ except Exception as e:
                    f"Install with 'pip install Gooey if you want a no-arg GUI to invoke v2e'. See README")
 
 
-def get_args() -> Tuple:\n    \"\"\" proceses input arguments\n    :returns: (args_namespace,other_args,command_line) \"\"\"\n    parser = argparse.ArgumentParser(\n        description='v2e: generate simulated DVS events from video.',\n        epilog='Run with no --input to open file dialog', allow_abbrev=True,\n        formatter_class=SmartFormatter)
+def get_args() -> Tuple:
+    """ proceses input arguments
+    :returns: (args_namespace,other_args,command_line) """
+    parser = argparse.ArgumentParser(
+        description='v2e: generate simulated DVS events from video.',
+        epilog='Run with no --input to open file dialog', allow_abbrev=True,
+        formatter_class=SmartFormatter)
 
     parser = v2e_args(parser)
 
@@ -81,10 +91,20 @@ def main():
             f'{e}: Gooey package GUI not available, using command line arguments. \n'
             f'You can try to install with "pip install Gooey"')
 
-    (args,other_args,command_line) = get_args()\n\n    class PathError(ValueError):\n        pass
+    (args,other_args,command_line) = get_args()
+
+    class PathError(ValueError):
+        pass
 
     # set input file
-    input_file = args.input\n    if input_file is None:\n        input_file = os.path.expanduser(input_file)\n        input_file = os.path.expandvars(input_file)\n        p = Path(input_file)\n        if not p.exists():\n            logger.error(f'input file or folder {input_file} does not exist')\n            raise PathError(f'input path {input_file} does not exist')
+    input_file = args.input
+    if input_file is None:
+        input_file = os.path.expanduser(input_file)
+        input_file = os.path.expandvars(input_file)
+        p = Path(input_file)
+        if not p.exists():
+            logger.error(f'input file or folder {input_file} does not exist')
+            raise PathError(f'input path {input_file} does not exist')
     synthetic_input:str = args.synthetic_input
 
     if synthetic_input is not None and input_file is not None:
@@ -102,7 +122,15 @@ def main():
             v2e_quit(1)
 
     # Set output folder
-    output_folder = set_output_folder(\n        args.output_folder,\n        input_file,\n        args.unique_output_folder if not args.overwrite else False,\n        args.overwrite,\n        args.output_in_place if (not synthetic_input) else False,\n        logger)\n    p = Path(output_folder)\n    p.mkdir(parents=True, exist_ok=True)
+    output_folder = set_output_folder(
+        args.output_folder,
+        input_file,
+        args.unique_output_folder if not args.overwrite else False,
+        args.overwrite,
+        args.output_in_place if (not synthetic_input) else False,
+        logger)
+    p = Path(output_folder)
+    p.mkdir(parents=True, exist_ok=True)
 
     # Set output width and height based on the arguments
     output_width, output_height = set_output_dimension(

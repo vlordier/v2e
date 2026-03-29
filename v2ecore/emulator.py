@@ -82,7 +82,9 @@ class EventEmulator(object):
     SCIDVS_TAU_S: float = .01  # small signal time constant in seconds
     SCIDVS_TAU_COV: float = 0.5  # each pixel has its own time constant. The tau's have log normal distribution with this sigma
 
-    def __init__(\n            self,\n            pos_thres: float = 0.2,\n            neg_thres: float = 0.2,\n            sigma_thres: float = 0.03,\n            cutoff_hz: float = 0.0,\n            leak_rate_hz: float = 0.1,\n            refractory_period_s: float = 0.0,\n            shot_noise_rate_hz: float = 0.0,\n            photoreceptor_noise: bool = False,\n            leak_jitter_fraction: float = 0.1,\n            noise_rate_cov_decades: float = 0.1,\n            seed: int = 0,\n            output_folder: Optional[str] = None,\n            dvs_h5: Optional[str] = None,\n            dvs_aedat2: Optional[str] = None,\n            dvs_aedat4: Optional[str] = None,\n            dvs_text: Optional[str] = None,\n            show_dvs_model_state: Optional[str] = None,\n            save_dvs_model_state: bool = False,\n            output_width: Optional[int] = None,\n            output_height: Optional[int] = None,\n            device: str = "cuda",\n            cs_lambda_pixels: Optional[float] = None,\n            cs_tau_p_ms: Optional[float] = None,\n            hdr: bool = False,\n            scidvs: bool = False,\n            record_single_pixel_states: Optional[Tuple[int, int]] = None,\n            label_signal_noise: bool = False\n    ) -> None:\n
+    def __init__(
+            self,
+            pos_thres: float = 0.2,
             neg_thres: float = 0.2,
             sigma_thres: float = 0.03,
             cutoff_hz: float = 0.0,
@@ -93,25 +95,25 @@ class EventEmulator(object):
             leak_jitter_fraction: float = 0.1,
             noise_rate_cov_decades: float = 0.1,
             seed: int = 0,
-            output_folder: str = None,
-            dvs_h5: str = None,
-            dvs_aedat2: str = None,
-            dvs_aedat4: str = None,
-            dvs_text: str = None,
+            output_folder: Optional[str] = None,
+            dvs_h5: Optional[str] = None,
+            dvs_aedat2: Optional[str] = None,
+            dvs_aedat4: Optional[str] = None,
+            dvs_text: Optional[str] = None,
             # change as you like to see 'baseLogFrame',
             # 'lpLogFrame', 'diff_frame'
-            show_dvs_model_state: str = None,
+            show_dvs_model_state: Optional[str] = None,
             save_dvs_model_state: bool = False,
-            output_width: int = None,
-            output_height: int = None,
+            output_width: Optional[int] = None,
+            output_height: Optional[int] = None,
             device: str = "cuda",
-            cs_lambda_pixels: float = None,
-            cs_tau_p_ms: float = None,
+            cs_lambda_pixels: Optional[float] = None,
+            cs_tau_p_ms: Optional[float] = None,
             hdr: bool = False,
             scidvs: bool = False,
-            record_single_pixel_states=None,
-            label_signal_noise=False
-    ):
+            record_single_pixel_states: Optional[Tuple[int, int]] = None,
+            label_signal_noise: bool = False
+    ) -> None:
         """
         Parameters
         ----------
@@ -340,13 +342,12 @@ class EventEmulator(object):
                 path = os.path.join(self.output_folder, dvs_text)
                 path = checkAddSuffix(path, '.txt')
                 logger.info('opening text DVS output file ' + path)
-                self.dvs_text = DVSTextOutput(path,label_signal_noise=self.label_signal_noise)\n        except Exception as e:\n            logger.error(f'could not open output file {path}: {e}')\n            logger.error('structured log: {\"level\": \"ERROR\", \"file\": \"emulator.py\", \"error\": \"output file open\", \"path\": \"%s\", \"exception\": \"%s\"}' % (path, str(e)))\n            raise
-
-
+                self.dvs_text = DVSTextOutput(path,label_signal_noise=self.label_signal_noise)
 
         except Exception as e:
-            logger.error(f'Output file exception "{e}" (maybe you need to specify a supported DVS camera type?)')
-            raise e
+            logger.error(f'could not open output file {path}: {e}')
+            logger.error('structured log: {\"level\": \"ERROR\", \"file\": \"emulator.py\", \"error\": \"output file open\", \"path\": \"%s\", \"exception\": \"%s\"}' % (path, str(e)))
+            raise
 
         self.screen_width = 1600
         self.screen_height = 1200
