@@ -699,6 +699,8 @@ class EventEmulator:
 
             if inten01 is not None and self.leak_rate_hz > 0:
                 # Fully fused: lin_log + lowpass + leak + diff + event_map
+                # Pre-generate random values outside compiled kernel for max fusion
+                self._rand_buf.normal_()
                 tau = 1 / (math.pi * 2 * self.cutoff_hz)
                 compiled_fn = get_compiled_step_leak()
                 self.lp_log_frame, self.base_log_frame, pos_evts_frame, neg_evts_frame = compiled_fn(

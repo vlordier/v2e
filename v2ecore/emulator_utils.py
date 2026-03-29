@@ -523,7 +523,7 @@ def _fused_step_with_leak(
     neg_thres: torch.Tensor,
     inten01: torch.Tensor,
     noise_rate_arr: torch.Tensor,
-    rand_buf: torch.Tensor,
+    rand_vals: torch.Tensor,
     delta_time: float,
     tau: float,
     leak_rate_hz: float,
@@ -532,7 +532,8 @@ def _fused_step_with_leak(
     """Fused pipeline: lin_log + lowpass + leak + diff + event_map.
 
     Leak subtraction is included in the compiled kernel, eliminating
-    a separate kernel launch.
+    a separate kernel launch. rand_vals is pre-generated externally
+    to keep RNG out of the compiled kernel for maximum fusion.
     """
     log_frame = torch.where(frame <= _LIN_LOG_THRESHOLD, frame * _LIN_LOG_F, torch.log(frame))
     log_frame = torch.round(log_frame * _ROUNDING) / _ROUNDING
@@ -540,9 +541,8 @@ def _fused_step_with_leak(
     eps = torch.clamp(eps, max=1)
     lp_buf = (1 - eps) * lp_buf + eps * log_frame
 
-    # Leak: modify base_buf in the fused kernel
-    torch.randn(base_buf.shape, out=rand_buf)
-    leak = leak_rate_hz * noise_rate_arr * (1 - leak_jitter * rand_buf)
+    # Leak: use pre-generated random values
+    leak = leak_rate_hz * noise_rate_arr * (1 - leak_jitter * rand_vals)
     base_buf = base_buf - delta_time * leak * pos_thres
 
     diff = lp_buf - base_buf
