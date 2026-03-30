@@ -215,6 +215,40 @@ def create_model(device: str) -> tuple[EventPredictor, int]:
     return model, num_params
 
 
+def augment_batch(
+    images: torch.Tensor,
+    imu_seq: torch.Tensor,
+    gt_events: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Apply data augmentation to batch."""
+    # Random horizontal flip
+    if torch.rand(1).item() > 0.5:
+        images = torch.flip(images, dims=[-1])
+        imu_seq = imu_seq.clone()
+        imu_seq[:, :, 0] = -imu_seq[:, :, 0]  # Flip acc_x
+        imu_seq[:, :, 3] = -imu_seq[:, :, 3]  # Flip gyro_x
+        gt_events = torch.flip(gt_events, dims=[-1])
+        gt_events = gt_events.clone()
+        gt_events[:, [0, 1]] = gt_events[:, [1, 0]]  # Swap pos/neg channels
+
+    # Random vertical flip
+    if torch.rand(1).item() > 0.5:
+        images = torch.flip(images, dims=[-2])
+        imu_seq = imu_seq.clone()
+        imu_seq[:, :, 1] = -imu_seq[:, :, 1]  # Flip acc_y
+        imu_seq[:, :, 4] = -imu_seq[:, :, 4]  # Flip gyro_y
+        gt_events = torch.flip(gt_events, dims=[-2])
+        gt_events = gt_events.clone()
+        gt_events[:, [0, 1]] = gt_events[:, [1, 0]]  # Swap pos/neg channels
+
+    # Add noise to IMU
+    if torch.rand(1).item() > 0.5:
+        noise = torch.randn_like(imu_seq) * 0.01
+        imu_seq = imu_seq + noise
+
+    return images, imu_seq, gt_events
+
+
 def training_step(
     model: EventPredictor,
     optimizer: torch.optim.Optimizer,
@@ -225,6 +259,10 @@ def training_step(
     images = batch["image"].to(device)
     imu_seq = batch["imu_seq"].to(device)
     gt_events = batch["events"].to(device)
+
+    # Apply augmentation during training
+    if model.training:
+        images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
 
     optimizer.zero_grad()
     pred_events = model(images, imu_seq)
