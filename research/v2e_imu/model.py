@@ -18,10 +18,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class IMUEncoder(nn.Module):
+class IMUEncoder(nn.Module):  # type: ignore[misc]
     """Encode IMU sequences (6D: acc_xyz + gyro_xyz) into feature vectors."""
 
-    def __init__(self, imu_dim: int = 6, hidden_dim: int = 128, num_layers: int = 2):
+    def __init__(self, imu_dim: int = 6, hidden_dim: int = 128, num_layers: int = 2) -> None:
         super().__init__()
         self.lstm = nn.LSTM(
             imu_dim, hidden_dim, num_layers=num_layers, batch_first=True, bidirectional=True
@@ -53,10 +53,10 @@ class IMUEncoder(nn.Module):
         return imu_features
 
 
-class RGBEncoder(nn.Module):
+class RGBEncoder(nn.Module):  # type: ignore[misc]
     """Encode grayscale RGB images into feature maps."""
 
-    def __init__(self, in_channels: int = 1, base_channels: int = 64):
+    def __init__(self, in_channels: int = 1, base_channels: int = 64) -> None:
         super().__init__()
 
         self.encoder = nn.Sequential(
@@ -91,7 +91,7 @@ class RGBEncoder(nn.Module):
         return self.encoder(x)
 
 
-class IMUConditionedRGB(nn.Module):
+class IMUConditionedRGB(nn.Module):  # type: ignore[misc]
     """
     Modulate RGB features using IMU information.
 
@@ -99,7 +99,7 @@ class IMUConditionedRGB(nn.Module):
     This allows the model to adapt RGB processing based on motion.
     """
 
-    def __init__(self, rgb_channels: int, imu_dim: int = 128):
+    def __init__(self, rgb_channels: int, imu_dim: int = 128) -> None:
         super().__init__()
 
         # IMU to feature modulation parameters
@@ -134,10 +134,10 @@ class IMUConditionedRGB(nn.Module):
         return modulated
 
 
-class EventPredictionHead(nn.Module):
+class EventPredictionHead(nn.Module):  # type: ignore[misc]
     """Predict events (2-channel: positive/negative) from features."""
 
-    def __init__(self, in_channels: int, out_size: tuple[int, int] = (480, 640)):
+    def __init__(self, in_channels: int, out_size: tuple[int, int] = (480, 640)) -> None:
         super().__init__()
 
         self.out_size = out_size
@@ -180,10 +180,10 @@ class EventPredictionHead(nn.Module):
         return events
 
 
-class DepthPredictionHead(nn.Module):
+class DepthPredictionHead(nn.Module):  # type: ignore[misc]
     """Predict depth from features (primary task)."""
 
-    def __init__(self, in_channels: int, out_size: tuple[int, int] = (480, 640)):
+    def __init__(self, in_channels: int, out_size: tuple[int, int] = (480, 640)) -> None:
         super().__init__()
 
         self.out_size = out_size
@@ -223,7 +223,7 @@ class DepthPredictionHead(nn.Module):
         return depth
 
 
-class IMUEnhancedEventModel(nn.Module):
+class IMUEnhancedEventModel(nn.Module):  # type: ignore[misc]
     """
     Main model: RGB + IMU → Depth + Events
 
@@ -289,14 +289,14 @@ class IMUEnhancedEventModel(nn.Module):
         return depth, events
 
 
-class MultiTaskLoss(nn.Module):
+class MultiTaskLoss(nn.Module):  # type: ignore[misc]
     """
     Multi-task loss combining depth and event prediction.
 
     Automatically balances losses using uncertainty weighting.
     """
 
-    def __init__(self, task_weights: dict | None = None):
+    def __init__(self, task_weights: dict[str, float] | None = None) -> None:
         super().__init__()
 
         # Learnable log variance for uncertainty weighting
@@ -312,7 +312,7 @@ class MultiTaskLoss(nn.Module):
         pred_events: torch.Tensor,
         gt_depth: torch.Tensor | None = None,
         gt_events: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, dict]:
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         """
         Args:
             pred_depth: (B, 1, H, W) - Predicted depth

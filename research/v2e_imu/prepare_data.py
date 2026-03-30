@@ -14,6 +14,7 @@ Usage:
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -34,7 +35,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "fpv")
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "data", "cache")
 
 
-class FPVDataset(Dataset):
+class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
     """
     Dataset loader for UZH FPV format data.
 
@@ -49,19 +50,19 @@ class FPVDataset(Dataset):
         seq_len: int = MAX_SEQ_LEN,
         image_size: tuple[int, int] = IMAGE_SIZE,
         event_window_ms: int = EVENT_WINDOW_MS,
-    ):
+    ) -> None:
         self.data_dir = Path(data_dir)
         self.split = split
         self.seq_len = seq_len
         self.image_size = image_size
         self.event_window_ms = event_window_ms
 
-        self.imu_data = []
-        self.event_timestamps = []
-        self.event_x = []
-        self.event_y = []
-        self.event_polarity = []
-        self.image_timestamps = []
+        self.imu_data: list[dict[str, Any]] = []
+        self.event_timestamps: np.ndarray = np.array([], dtype=np.float64)
+        self.event_x: np.ndarray = np.array([], dtype=np.int32)
+        self.event_y: np.ndarray = np.array([], dtype=np.int32)
+        self.event_polarity: np.ndarray = np.array([], dtype=np.int8)
+        self.image_timestamps: list[dict[str, Any]] = []
         self.use_synthetic = False
 
         # Try to load real data
@@ -80,121 +81,129 @@ class FPVDataset(Dataset):
                 f"{len(self.image_timestamps)} images"
             )
 
-    def _load_data(self):
-        """Load data from text files in UZH FPV format."""
-        # Find the actual data directory (might be in a subdirectory)
+    def _find_data_dir(self) -> Path | None:
+        """Find the actual data directory containing data files."""
         data_files = list(self.data_dir.glob("**/imu.txt"))
         if not data_files:
+            return None
+        return data_files[0].parent
+
+    def _load_imu_data(self, data_dir: Path) -> None:
+        """Load IMU data from text file."""
+        imu_file = data_dir / "imu.txt"
+        if not imu_file.exists():
             return
 
-        # Use the first directory that has imu.txt
-        actual_data_dir = data_files[0].parent
+        with open(imu_file) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.strip().split()
+                if len(parts) >= 7:
+                    t = float(parts[1])
+                    gyro = [float(parts[i]) for i in range(2, 5)]
+                    acc = [float(parts[i]) for i in range(5, 8)]
+                    self.imu_data.append(
+                        {
+                            "timestamp": t,
+                            "acc": np.array(acc, dtype=np.float32),
+                            "gyro": np.array(gyro, dtype=np.float32),
+                        }
+                    )
 
-        # Load IMU data
-        # Format: index timestamp ang_vel_x ang_vel_y ang_vel_z lin_acc_x lin_acc_y lin_acc_z
-        imu_file = actual_data_dir / "imu.txt"
-        if imu_file.exists():
-            with open(imu_file) as f:
+    def _load_events_data(self, data_dir: Path) -> None:
+        """Load event data efficiently using chunked reading."""
+        events_file = data_dir / "events.txt"
+        if not events_file.exists():
+            return
+
+        print("Loading events (this may take a moment)...")
+        chunk_size = 1000000
+        all_timestamps: list[float] = []
+        all_x: list[int] = []
+        all_y: list[int] = []
+        all_polarity: list[int] = []
+
+        try:
+            with open(events_file) as f:
+                chunk_timestamps: list[float] = []
+                chunk_x: list[int] = []
+                chunk_y: list[int] = []
+                chunk_polarity: list[int] = []
+
                 for line in f:
                     if line.startswith("#"):
                         continue
                     parts = line.strip().split()
-                    if len(parts) >= 7:
-                        t = float(parts[1])  # timestamp
-                        gyro = [float(parts[i]) for i in range(2, 5)]
-                        acc = [float(parts[i]) for i in range(5, 8)]
-                        self.imu_data.append(
-                            {
-                                "timestamp": t,
-                                "acc": np.array(acc, dtype=np.float32),
-                                "gyro": np.array(gyro, dtype=np.float32),
-                            }
-                        )
+                    if len(parts) >= 4:
+                        chunk_timestamps.append(float(parts[0]))
+                        chunk_x.append(int(parts[1]))
+                        chunk_y.append(int(parts[2]))
+                        chunk_polarity.append(int(parts[3]))
 
-        # Load event data efficiently using numpy arrays
-        # Format: timestamp x y polarity
-        events_file = actual_data_dir / "events.txt"
-        if events_file.exists():
-            print("Loading events (this may take a moment)...")
-            # Use numpy to load events efficiently
-            try:
-                # Load in chunks to avoid memory issues
-                chunk_size = 1000000
-                all_timestamps = []
-                all_x = []
-                all_y = []
-                all_polarity = []
-
-                with open(events_file) as f:
-                    chunk_timestamps = []
-                    chunk_x = []
-                    chunk_y = []
-                    chunk_polarity = []
-
-                    for i, line in enumerate(f):
-                        if line.startswith("#"):
-                            continue
-                        parts = line.strip().split()
-                        if len(parts) >= 4:
-                            chunk_timestamps.append(float(parts[0]))
-                            chunk_x.append(int(parts[1]))
-                            chunk_y.append(int(parts[2]))
-                            chunk_polarity.append(int(parts[3]))
-
-                        if len(chunk_timestamps) >= chunk_size:
-                            all_timestamps.extend(chunk_timestamps)
-                            all_x.extend(chunk_x)
-                            all_y.extend(chunk_y)
-                            all_polarity.extend(chunk_polarity)
-                            chunk_timestamps = []
-                            chunk_x = []
-                            chunk_y = []
-                            chunk_polarity = []
-
-                    # Add remaining
-                    if chunk_timestamps:
+                    if len(chunk_timestamps) >= chunk_size:
                         all_timestamps.extend(chunk_timestamps)
                         all_x.extend(chunk_x)
                         all_y.extend(chunk_y)
                         all_polarity.extend(chunk_polarity)
+                        chunk_timestamps = []
+                        chunk_x = []
+                        chunk_y = []
+                        chunk_polarity = []
 
-                self.event_timestamps = np.array(all_timestamps, dtype=np.float64)
-                self.event_x = np.array(all_x, dtype=np.int32)
-                self.event_y = np.array(all_y, dtype=np.int32)
-                self.event_polarity = np.array(all_polarity, dtype=np.int8)
+                if chunk_timestamps:
+                    all_timestamps.extend(chunk_timestamps)
+                    all_x.extend(chunk_x)
+                    all_y.extend(chunk_y)
+                    all_polarity.extend(chunk_polarity)
 
-                print(f"Loaded {len(self.event_timestamps)} events")
-            except Exception as e:
-                print(f"Error loading events: {e}")
-                self.event_timestamps = np.array([])
-                self.event_x = np.array([])
-                self.event_y = np.array([])
-                self.event_polarity = np.array([])
+            self.event_timestamps = np.array(all_timestamps, dtype=np.float64)
+            self.event_x = np.array(all_x, dtype=np.int32)
+            self.event_y = np.array(all_y, dtype=np.int32)
+            self.event_polarity = np.array(all_polarity, dtype=np.int8)
+            print(f"Loaded {len(self.event_timestamps)} events")
+        except Exception as e:
+            print(f"Error loading events: {e}")
+            self.event_timestamps = np.array([], dtype=np.float64)
+            self.event_x = np.array([], dtype=np.int32)
+            self.event_y = np.array([], dtype=np.int32)
+            self.event_polarity = np.array([], dtype=np.int8)
 
-        # Load image timestamps
-        # Format: id timestamp image_name
-        images_file = actual_data_dir / "images.txt"
-        if images_file.exists():
-            with open(images_file) as f:
-                for line in f:
-                    if line.startswith("#"):
-                        continue
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        t = float(parts[1])  # timestamp
-                        filename = parts[2]  # image_name
-                        self.image_timestamps.append(
-                            {
-                                "timestamp": t,
-                                "filename": filename,
-                            }
-                        )
+    def _load_image_timestamps(self, data_dir: Path) -> None:
+        """Load image timestamps from text file."""
+        images_file = data_dir / "images.txt"
+        if not images_file.exists():
+            return
 
-    def _generate_synthetic_data(self):
+        with open(images_file) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.strip().split()
+                if len(parts) >= 3:
+                    t = float(parts[1])
+                    filename = parts[2]
+                    self.image_timestamps.append(
+                        {
+                            "timestamp": t,
+                            "filename": filename,
+                        }
+                    )
+
+    def _load_data(self) -> None:
+        """Load data from text files in UZH FPV format."""
+        actual_data_dir = self._find_data_dir()
+        if actual_data_dir is None:
+            return
+
+        self._load_imu_data(actual_data_dir)
+        self._load_events_data(actual_data_dir)
+        self._load_image_timestamps(actual_data_dir)
+
+    def _generate_synthetic_data(self) -> None:
         """Generate synthetic data for testing."""
         num_samples = 2000
 
-        # Generate IMU data (100 Hz)
         for i in range(num_samples):
             t = i * 0.01
             acc = np.random.randn(3).astype(np.float32) * 0.1
@@ -207,7 +216,6 @@ class FPVDataset(Dataset):
                 }
             )
 
-        # Generate event data
         H, W = self.image_size
         num_events = num_samples * 5
         self.event_timestamps = np.array([i * 0.002 for i in range(num_events)], dtype=np.float64)
@@ -215,7 +223,6 @@ class FPVDataset(Dataset):
         self.event_y = np.random.randint(0, H, num_events, dtype=np.int32)
         self.event_polarity = np.random.randint(0, 2, num_events, dtype=np.int8)
 
-        # Generate image timestamps (30 Hz)
         for i in range(num_samples // 3):
             t = i * (1.0 / 30.0)
             self.image_timestamps.append(
@@ -233,12 +240,11 @@ class FPVDataset(Dataset):
         if end_idx - start_idx < self.seq_len:
             start_idx = max(0, end_idx - self.seq_len)
 
-        imu_seq = []
+        imu_seq: list[np.ndarray] = []
         for i in range(start_idx, end_idx):
             imu = self.imu_data[i]
             imu_seq.append(np.concatenate([imu["acc"], imu["gyro"]]))
 
-        # Pad if necessary
         while len(imu_seq) < self.seq_len:
             imu_seq.insert(0, np.zeros(6, dtype=np.float32))
 
@@ -255,15 +261,12 @@ class FPVDataset(Dataset):
         if len(self.event_timestamps) == 0:
             return np.stack([pos_events, neg_events], axis=0)
 
-        # Use binary search to find events in time window
         start_time = timestamp - dt / 2
         end_time = timestamp + dt / 2
 
-        # Find start and end indices using searchsorted
         start_idx = np.searchsorted(self.event_timestamps, start_time, side="left")
         end_idx = np.searchsorted(self.event_timestamps, end_time, side="right")
 
-        # Process only events in the window
         for i in range(start_idx, end_idx):
             x = self.event_x[i]
             y = self.event_y[i]
@@ -280,18 +283,13 @@ class FPVDataset(Dataset):
         H, W = self.image_size
         return np.random.rand(1, H, W).astype(np.float32)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return max(0, len(self.imu_data) - self.seq_len)
 
-    def __getitem__(self, idx):
-        # Get IMU sequence
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         imu_seq = self._get_imu_sequence(idx + self.seq_len // 2)
-
-        # Get event map
         timestamp = self.imu_data[idx + self.seq_len // 2]["timestamp"]
         events = self._get_event_map(timestamp)
-
-        # Get image
         image = self._get_random_image()
 
         return {
@@ -323,7 +321,7 @@ def make_dataloader(
         batch_size=batch_size,
         shuffle=(split == "train"),
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
+        pin_memory=torch.cuda.is_available(),
     )
 
 
@@ -333,11 +331,7 @@ def evaluate_event_bpb(
     device: str,
     num_samples: int = EVAL_SAMPLES,
 ) -> float:
-    """
-    Evaluate model using bits per byte (BPB) metric for event prediction.
-
-    Lower is better. This is analogous to val_bpb in autoresearch-mlx.
-    """
+    """Evaluate model using bits per byte (BPB) metric for event prediction."""
     model.eval()
 
     total_loss = 0.0
@@ -353,15 +347,10 @@ def evaluate_event_bpb(
             imu_seq = batch["imu_seq"].to(device)
             gt_events = batch["events"].to(device)
 
-            # Forward pass
             pred_events = model(images, imu_seq)
-
-            # Compute loss (MSE on event counts)
             loss = torch.nn.functional.mse_loss(pred_events, gt_events, reduction="sum")
 
-            # Count "bytes" (pixels * channels)
             batch_bytes = gt_events.numel()
-
             total_loss += loss.item()
             total_bytes += batch_bytes
             samples_processed += images.shape[0]
@@ -369,9 +358,8 @@ def evaluate_event_bpb(
     if total_bytes == 0:
         return float("inf")
 
-    # Convert to bits per byte
     bpb = (total_loss / total_bytes) / np.log(2)
-    return bpb
+    return float(bpb)
 
 
 def evaluate_combined_metric(
@@ -380,15 +368,7 @@ def evaluate_combined_metric(
     device: str,
     num_samples: int = EVAL_SAMPLES,
 ) -> dict[str, float]:
-    """
-    Evaluate model with combined metrics.
-
-    Returns:
-        Dictionary with:
-        - 'event_bpb': Bits per byte for event prediction
-        - 'event_mse': Mean squared error for events
-        - 'samples_per_sec': Throughput
-    """
+    """Evaluate model with combined metrics."""
     model.eval()
 
     total_event_loss = 0.0
@@ -405,7 +385,6 @@ def evaluate_combined_metric(
             gt_events = batch["events"].to(device)
 
             pred_events = model(images, imu_seq)
-
             event_loss = torch.nn.functional.mse_loss(pred_events, gt_events, reduction="sum")
 
             total_event_loss += event_loss.item()
@@ -418,23 +397,21 @@ def evaluate_combined_metric(
     event_bpb = avg_event_mse / np.log(2)
 
     return {
-        "event_bpb": event_bpb,
-        "event_mse": avg_event_mse,
-        "samples_per_sec": samples_per_sec,
+        "event_bpb": float(event_bpb),
+        "event_mse": float(avg_event_mse),
+        "samples_per_sec": float(samples_per_sec),
     }
 
 
-def prepare_data():
+def prepare_data() -> None:
     """One-time data preparation."""
     print("Preparing data for IMU-Enhanced Event Camera experiments...")
     print(f"Data directory: {DATA_DIR}")
     print(f"Cache directory: {CACHE_DIR}")
 
-    # Create directories
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    # Check for existing data
     data_files = list(Path(DATA_DIR).glob("**/imu.txt"))
     if data_files:
         print(f"Found {len(data_files)} dataset directories")
