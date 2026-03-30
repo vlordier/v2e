@@ -7,7 +7,12 @@ import atexit
 import struct
 
 # check https://gitlab.com/inivation/dv/dv-processing to install dv-processing-python
-import dv_processing as dv
+_dv_import_error = None
+try:
+    import dv_processing as dv
+except Exception as e:
+    dv = None
+    _dv_import_error = e
 
 from v2ecore.v2e_utils import v2e_quit
 
@@ -21,6 +26,11 @@ class AEDat4Output:
 
 
     def __init__(self, filepath: str, output_width=640, output_height=480):
+        if dv is None:
+            raise RuntimeError(
+                "AEDAT4 output requires optional dependency 'dv_processing'. "
+                "Install it with: python -m pip install -e .[aedat4]"
+            ) from _dv_import_error
         self.filepath = filepath
         self.numEventsWritten = 0
         self.numOnEvents=0

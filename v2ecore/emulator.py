@@ -31,7 +31,6 @@ from v2ecore.emulator_utils import compute_photoreceptor_noise_voltage, generate
 from v2ecore.emulator_utils import get_compiled_step, get_compiled_step_leak, get_compiled_batched
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
-from v2ecore.output.aedat4_output import AEDat4Output
 from v2ecore.v2e_utils import checkAddSuffix, v2e_quit, video_writer
 
 # import rosbag # not yet for python 3
@@ -358,6 +357,7 @@ class EventEmulator:
                 path = os.path.join(self.output_folder, dvs_aedat4)
                 path = checkAddSuffix(path, '.aedat4')
                 logger.info('opening AEDAT-4.0 output file ' + path)
+                from v2ecore.output.aedat4_output import AEDat4Output
                 self.dvs_aedat4 = AEDat4Output(
                     path)
 
