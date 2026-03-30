@@ -335,20 +335,37 @@ def run_training_loop(
     total_training_time = 0.0
     step = 0
     smooth_train_loss = 0.0
+    grad_accum_steps = 2  # Experiment: gradient accumulation
 
     model.train()
     train_iter = iter(train_loader)
 
     while True:
         t0 = time.time()
+        optimizer.zero_grad()
+        accumulated_loss = 0.0
 
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
+        for _ in range(grad_accum_steps):
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                batch = next(train_iter)
 
-        loss_val = training_step(model, optimizer, batch, device)
+            images = batch["image"].to(device)
+            imu_seq = batch["imu_seq"].to(device)
+            gt_events = batch["events"].to(device)
+
+            if model.training:
+                images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
+
+            pred_events = model(images, imu_seq)
+            loss = F.mse_loss(pred_events, gt_events) / grad_accum_steps
+            loss.backward()
+            accumulated_loss += loss.item()
+
+        optimizer.step()
+        loss_val = accumulated_loss
 
         dt = time.time() - t0
         total_training_time += dt
