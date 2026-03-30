@@ -147,3 +147,17 @@ dmypy.json
 cython_debug/
 
 *.ckpt
+
+# Research datasets
+*.bag
+*.hdf5
+*.h5
+*.aedat
+*.aedat4
+*.dat
+*.zip
+research/v2e_imu/data/
+research/v2e_imu/datasets/
+research/v2e_imu/checkpoints/
+research/v2e_imu/test_checkpoints/
+research/v2e_imu/download.log
