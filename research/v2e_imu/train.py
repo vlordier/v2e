@@ -161,7 +161,7 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
 
 # Model architecture
 BASE_CHANNELS = 48  # Experiment: wider model
-IMU_HIDDEN_DIM = 128
+IMU_HIDDEN_DIM = 256  # Experiment: larger IMU hidden dim
 
 # Training
 TOTAL_BATCH_SIZE = 32
