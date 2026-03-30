@@ -1,1 +1,2 @@
 commit	event_bpb	peak_memory_gb	status	description
+71f3881	0.012287	0.5	keep	baseline: 0.87M params, AdamW, lr=1e-3, bs=2

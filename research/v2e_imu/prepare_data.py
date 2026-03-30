@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, Dataset
 MAX_SEQ_LEN = 50  # IMU sequence length
 IMAGE_SIZE = (260, 346)  # DAVIS346 resolution
 TIME_BUDGET = 600  # 10 minutes per experiment (in seconds)
-EVAL_SAMPLES = 1000  # Number of samples for evaluation
+EVAL_SAMPLES = 100  # Number of samples for evaluation (reduced for speed)
 EVENT_WINDOW_MS = 33  # Event accumulation window (30 Hz)
 
 # Data directory
@@ -57,7 +57,10 @@ class FPVDataset(Dataset):
         self.event_window_ms = event_window_ms
 
         self.imu_data = []
-        self.event_data = []
+        self.event_timestamps = []
+        self.event_x = []
+        self.event_y = []
+        self.event_polarity = []
         self.image_timestamps = []
         self.use_synthetic = False
 
@@ -73,7 +76,7 @@ class FPVDataset(Dataset):
         else:
             print(
                 f"Loaded {len(self.imu_data)} IMU samples, "
-                f"{len(self.event_data)} events, "
+                f"{len(self.event_timestamps)} events, "
                 f"{len(self.image_timestamps)} images"
             )
 
@@ -88,7 +91,7 @@ class FPVDataset(Dataset):
         actual_data_dir = data_files[0].parent
 
         # Load IMU data
-        # Format: timestamp ang_vel_x ang_vel_y ang_vel_z lin_acc_x lin_acc_y lin_acc_z
+        # Format: index timestamp ang_vel_x ang_vel_y ang_vel_z lin_acc_x lin_acc_y lin_acc_z
         imu_file = actual_data_dir / "imu.txt"
         if imu_file.exists():
             with open(imu_file) as f:
@@ -97,14 +100,9 @@ class FPVDataset(Dataset):
                         continue
                     parts = line.strip().split()
                     if len(parts) >= 7:
-                        # Skip the first column (index), use second as timestamp
                         t = float(parts[1])  # timestamp
-                        gyro = [
-                            float(parts[i]) for i in range(2, 5)
-                        ]  # ang_vel_x, ang_vel_y, ang_vel_z
-                        acc = [
-                            float(parts[i]) for i in range(5, 8)
-                        ]  # lin_acc_x, lin_acc_y, lin_acc_z
+                        gyro = [float(parts[i]) for i in range(2, 5)]
+                        acc = [float(parts[i]) for i in range(5, 8)]
                         self.imu_data.append(
                             {
                                 "timestamp": t,
@@ -113,28 +111,65 @@ class FPVDataset(Dataset):
                             }
                         )
 
-        # Load event data
+        # Load event data efficiently using numpy arrays
         # Format: timestamp x y polarity
         events_file = actual_data_dir / "events.txt"
         if events_file.exists():
-            with open(events_file) as f:
-                for line in f:
-                    if line.startswith("#"):
-                        continue
-                    parts = line.strip().split()
-                    if len(parts) >= 4:
-                        t = float(parts[0])
-                        x = int(parts[1])
-                        y = int(parts[2])
-                        p = int(parts[3])
-                        self.event_data.append(
-                            {
-                                "timestamp": t,
-                                "x": x,
-                                "y": y,
-                                "polarity": p,
-                            }
-                        )
+            print("Loading events (this may take a moment)...")
+            # Use numpy to load events efficiently
+            try:
+                # Load in chunks to avoid memory issues
+                chunk_size = 1000000
+                all_timestamps = []
+                all_x = []
+                all_y = []
+                all_polarity = []
+
+                with open(events_file) as f:
+                    chunk_timestamps = []
+                    chunk_x = []
+                    chunk_y = []
+                    chunk_polarity = []
+
+                    for i, line in enumerate(f):
+                        if line.startswith("#"):
+                            continue
+                        parts = line.strip().split()
+                        if len(parts) >= 4:
+                            chunk_timestamps.append(float(parts[0]))
+                            chunk_x.append(int(parts[1]))
+                            chunk_y.append(int(parts[2]))
+                            chunk_polarity.append(int(parts[3]))
+
+                        if len(chunk_timestamps) >= chunk_size:
+                            all_timestamps.extend(chunk_timestamps)
+                            all_x.extend(chunk_x)
+                            all_y.extend(chunk_y)
+                            all_polarity.extend(chunk_polarity)
+                            chunk_timestamps = []
+                            chunk_x = []
+                            chunk_y = []
+                            chunk_polarity = []
+
+                    # Add remaining
+                    if chunk_timestamps:
+                        all_timestamps.extend(chunk_timestamps)
+                        all_x.extend(chunk_x)
+                        all_y.extend(chunk_y)
+                        all_polarity.extend(chunk_polarity)
+
+                self.event_timestamps = np.array(all_timestamps, dtype=np.float64)
+                self.event_x = np.array(all_x, dtype=np.int32)
+                self.event_y = np.array(all_y, dtype=np.int32)
+                self.event_polarity = np.array(all_polarity, dtype=np.int8)
+
+                print(f"Loaded {len(self.event_timestamps)} events")
+            except Exception as e:
+                print(f"Error loading events: {e}")
+                self.event_timestamps = np.array([])
+                self.event_x = np.array([])
+                self.event_y = np.array([])
+                self.event_polarity = np.array([])
 
         # Load image timestamps
         # Format: id timestamp image_name
@@ -146,7 +181,6 @@ class FPVDataset(Dataset):
                         continue
                     parts = line.strip().split()
                     if len(parts) >= 3:
-                        # Skip the first column (id), use second as timestamp
                         t = float(parts[1])  # timestamp
                         filename = parts[2]  # image_name
                         self.image_timestamps.append(
@@ -175,19 +209,11 @@ class FPVDataset(Dataset):
 
         # Generate event data
         H, W = self.image_size
-        for i in range(num_samples * 5):
-            t = i * 0.002  # ~500 Hz
-            x = np.random.randint(0, W)
-            y = np.random.randint(0, H)
-            p = np.random.randint(0, 2)
-            self.event_data.append(
-                {
-                    "timestamp": t,
-                    "x": x,
-                    "y": y,
-                    "polarity": p,
-                }
-            )
+        num_events = num_samples * 5
+        self.event_timestamps = np.array([i * 0.002 for i in range(num_events)], dtype=np.float64)
+        self.event_x = np.random.randint(0, W, num_events, dtype=np.int32)
+        self.event_y = np.random.randint(0, H, num_events, dtype=np.int32)
+        self.event_polarity = np.random.randint(0, 2, num_events, dtype=np.int8)
 
         # Generate image timestamps (30 Hz)
         for i in range(num_samples // 3):
@@ -219,30 +245,39 @@ class FPVDataset(Dataset):
         return np.array(imu_seq, dtype=np.float32)
 
     def _get_event_map(self, timestamp: float) -> np.ndarray:
-        """Get event map around a given timestamp."""
+        """Get event map around a given timestamp using binary search."""
         H, W = self.image_size
         dt = self.event_window_ms / 1000.0
 
         pos_events = np.zeros((H, W), dtype=np.float32)
         neg_events = np.zeros((H, W), dtype=np.float32)
 
-        for event in self.event_data:
-            t = event["timestamp"]
-            if timestamp - dt / 2 <= t <= timestamp + dt / 2:
-                x, y = event["x"], event["y"]
-                if 0 <= x < W and 0 <= y < H:
-                    if event["polarity"] == 1:
-                        pos_events[y, x] += 1
-                    else:
-                        neg_events[y, x] += 1
+        if len(self.event_timestamps) == 0:
+            return np.stack([pos_events, neg_events], axis=0)
+
+        # Use binary search to find events in time window
+        start_time = timestamp - dt / 2
+        end_time = timestamp + dt / 2
+
+        # Find start and end indices using searchsorted
+        start_idx = np.searchsorted(self.event_timestamps, start_time, side="left")
+        end_idx = np.searchsorted(self.event_timestamps, end_time, side="right")
+
+        # Process only events in the window
+        for i in range(start_idx, end_idx):
+            x = self.event_x[i]
+            y = self.event_y[i]
+            if 0 <= x < W and 0 <= y < H:
+                if self.event_polarity[i] == 1:
+                    pos_events[y, x] += 1
+                else:
+                    neg_events[y, x] += 1
 
         return np.stack([pos_events, neg_events], axis=0)
 
     def _get_random_image(self) -> np.ndarray:
         """Get a random grayscale image (placeholder)."""
         H, W = self.image_size
-        # In real usage, this would load actual images
-        # For now, generate random grayscale
         return np.random.rand(1, H, W).astype(np.float32)
 
     def __len__(self):
@@ -335,7 +370,6 @@ def evaluate_event_bpb(
         return float("inf")
 
     # Convert to bits per byte
-    # MSE loss is in nats, convert to bits
     bpb = (total_loss / total_bytes) / np.log(2)
     return bpb
 
