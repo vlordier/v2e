@@ -360,13 +360,8 @@ def run_training_loop(
                 images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
 
             pred_events = model(images, imu_seq)
-            # Focal loss for sparse events
-            alpha = 0.25
-            gamma = 2.0
-            pred_sigmoid = torch.sigmoid(pred_events)
-            focal_weight = alpha * gt_events.pow(gamma) + (1 - alpha) * (1 - gt_events).pow(gamma)
-            bce = F.binary_cross_entropy(pred_sigmoid, gt_events, reduction="none")
-            loss = (focal_weight * bce).sum() / (gt_events.numel() * grad_accum_steps)
+            # Use MSE loss for stability
+            loss = F.mse_loss(pred_events, gt_events) / grad_accum_steps
             loss.backward()
             accumulated_loss += loss.item()
 
