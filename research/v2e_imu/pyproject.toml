@@ -1,0 +1,13 @@
+[project]
+name = "v2e-imu-research"
+version = "0.1.0"
+description = "IMU-Enhanced Event Camera Research"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.24.0",
+]
+
+[dependency-groups]
+dev = []

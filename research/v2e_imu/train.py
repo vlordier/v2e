@@ -97,19 +97,99 @@ class RGBEncoder(nn.Module):  # type: ignore[misc]
         return x1, x2, x3
 
 
-class IMUConditionedFusion(nn.Module):  # type: ignore[misc]
-    """Modulate RGB features with IMU information."""
+class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
+    """Multi-scale FiLM modulation with IMU conditioning."""
 
-    def __init__(self, rgb_channels: int, imu_dim: int = 128) -> None:
+    def __init__(self, base_channels: int, imu_dim: int = 128) -> None:
         super().__init__()
-        self.imu_to_scale = nn.Sequential(nn.Linear(imu_dim, rgb_channels), nn.Sigmoid())
-        self.imu_to_bias = nn.Sequential(nn.Linear(imu_dim, rgb_channels), nn.Tanh())
+        # FiLM parameters for each scale
+        scales = [base_channels, base_channels * 2, base_channels * 4]
 
-    def forward(self, rgb_features: torch.Tensor, imu_features: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = rgb_features.shape
-        scale = self.imu_to_scale(imu_features).view(B, C, 1, 1)
-        bias = self.imu_to_bias(imu_features).view(B, C, 1, 1)
-        return rgb_features * scale + bias
+        # Shared IMU feature projection
+        self.imu_proj = nn.Sequential(
+            nn.Linear(imu_dim, imu_dim * 2),
+            nn.SiLU(),
+            nn.Linear(imu_dim * 2, imu_dim * 2),
+        )
+
+        # Scale and bias for each resolution
+        self.film_params = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(imu_dim * 2, c),
+                    nn.Sigmoid(),  # scale in (0, 1)
+                )
+                for c in scales
+            ]
+        )
+        self.film_bias = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(imu_dim * 2, c),
+                    nn.Tanh(),  # bias in (-1, 1)
+                )
+                for c in scales
+            ]
+        )
+
+    def forward(
+        self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor], imu_features: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Project IMU features once
+        imu_proj = self.imu_proj(imu_features)
+
+        # Apply FiLM at each scale
+        modulated = []
+        for f, scale_fn, bias_fn in zip(features, self.film_params, self.film_bias, strict=True):
+            scale = scale_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
+            bias = bias_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
+            modulated.append(f * scale + bias)
+
+        return tuple(modulated)
+
+
+class AdaINFusion(nn.Module):  # type: ignore[misc]
+    """AdaIN-style fusion: normalize RGB, then modulate with IMU statistics."""
+
+    def __init__(self, base_channels: int, imu_dim: int = 128) -> None:
+        super().__init__()
+        self.base_channels = base_channels
+        # IMU predicts style statistics for each scale
+        scales = [base_channels, base_channels * 2, base_channels * 4]
+        total_params = sum(c * 2 for c in scales)  # gamma + beta for each
+
+        self.imu_to_style = nn.Sequential(
+            nn.Linear(imu_dim, imu_dim * 2),
+            nn.SiLU(),
+            nn.Linear(imu_dim * 2, total_params),
+        )
+        self.eps = 1e-5
+
+    def forward(
+        self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor], imu_features: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Get style parameters from IMU
+        style = self.imu_to_style(imu_features)
+
+        # Normalize each feature map, then apply IMU style
+        modulated = []
+        param_idx = 0
+
+        for f in features:
+            c = f.shape[1]
+            # Instance normalization
+            mean = f.mean(dim=(2, 3), keepdim=True)
+            std = f.std(dim=(2, 3), keepdim=True) + self.eps
+            f_norm = (f - mean) / std
+
+            # Get gamma and beta for this scale
+            gamma = style[:, param_idx : param_idx + c].view(f.shape[0], c, 1, 1)
+            beta = style[:, param_idx + c : param_idx + c * 2].view(f.shape[0], c, 1, 1)
+            param_idx += c * 2
+
+            modulated.append(f_norm * gamma + beta)
+
+        return tuple(modulated)
 
 
 class EventPredictionHead(nn.Module):  # type: ignore[misc]
@@ -139,7 +219,7 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
-    """Main model: RGB + IMU -> Events with skip connections."""
+    """Main model: RGB + IMU -> Events with AdaIN-style fusion."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -148,9 +228,8 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         self.rgb_encoder = RGBEncoder(
             in_channels=config.rgb_channels, base_channels=config.base_channels
         )
-        self.fusion = IMUConditionedFusion(
-            rgb_channels=self.rgb_encoder.out_channels, imu_dim=config.imu_hidden_dim
-        )
+        # AdaIN-style fusion (normalize then modulate)
+        self.fusion = AdaINFusion(base_channels=config.base_channels, imu_dim=config.imu_hidden_dim)
         # Decoder with skip connections
         base = config.base_channels
         self.up1 = nn.Sequential(
@@ -174,17 +253,18 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
     def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
         imu_features = self.imu_encoder(imu_seq)
         x1, x2, x3 = self.rgb_encoder(image)
-        fused = self.fusion(x3, imu_features)
+        # Apply multi-scale FiLM
+        x1_mod, x2_mod, x3_mod = self.fusion((x1, x2, x3), imu_features)
 
-        # Decoder with skip connections
-        d1 = self.up1(fused)
-        if d1.shape[2:] != x2.shape[2:]:
-            d1 = F.interpolate(d1, size=x2.shape[2:], mode="bilinear", align_corners=False)
-        d1 = torch.cat([d1, x2], dim=1)
+        # Decoder with skip connections using modulated features
+        d1 = self.up1(x3_mod)
+        if d1.shape[2:] != x2_mod.shape[2:]:
+            d1 = F.interpolate(d1, size=x2_mod.shape[2:], mode="bilinear", align_corners=False)
+        d1 = torch.cat([d1, x2_mod], dim=1)
         d2 = self.up2(d1)
-        if d2.shape[2:] != x1.shape[2:]:
-            d2 = F.interpolate(d2, size=x1.shape[2:], mode="bilinear", align_corners=False)
-        d2 = torch.cat([d2, x1], dim=1)
+        if d2.shape[2:] != x1_mod.shape[2:]:
+            d2 = F.interpolate(d2, size=x1_mod.shape[2:], mode="bilinear", align_corners=False)
+        d2 = torch.cat([d2, x1_mod], dim=1)
         d3 = self.up3(d2)
         events = self.final(d3)
 
