@@ -4,13 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "v2e"
-dynamic = ["version"]
+version = "2.2.0"
 description = "Generates synthetic DVS events from conventional video"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-  {name = "Tobi Delbruck, Yuhuang Hu, Zhe He", email = "yuhuang.hu@ini.uzh.ch, tobi@ini.uzh.ch"},
+  {name = "Tobi Delbruck", email = "tobi@ini.uzh.ch"},
+  {name = "Yuhuang Hu", email = "yuhuang.hu@ini.uzh.ch"},
+  {name = "Zhe He", email = "zhehe@ini.uzh.ch"},
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
