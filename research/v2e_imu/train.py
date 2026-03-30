@@ -76,13 +76,13 @@ class RGBEncoder(nn.Module):  # type: ignore[misc]
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1),
             nn.BatchNorm2d(base_channels),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1),
             nn.BatchNorm2d(base_channels * 2),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.Conv2d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1),
             nn.BatchNorm2d(base_channels * 4),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
         )
         self.out_channels = base_channels * 4
 
@@ -114,13 +114,13 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(in_channels, 64, 4, stride=2, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.ConvTranspose2d(32, 16, 4, stride=2, padding=1),
             nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.Conv2d(16, 2, 3, padding=1),
         )
 
