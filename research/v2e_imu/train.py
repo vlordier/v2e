@@ -69,25 +69,32 @@ class IMUEncoder(nn.Module):  # type: ignore[misc]
 
 
 class RGBEncoder(nn.Module):  # type: ignore[misc]
-    """Encode grayscale images into feature maps."""
+    """Encode grayscale images into feature maps with skip connections."""
 
     def __init__(self, in_channels: int = 1, base_channels: int = 32) -> None:
         super().__init__()
-        self.encoder = nn.Sequential(
+        self.layer1 = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1),
             nn.BatchNorm2d(base_channels),
             nn.SiLU(inplace=True),
+        )
+        self.layer2 = nn.Sequential(
             nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1),
             nn.BatchNorm2d(base_channels * 2),
             nn.SiLU(inplace=True),
+        )
+        self.layer3 = nn.Sequential(
             nn.Conv2d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1),
             nn.BatchNorm2d(base_channels * 4),
             nn.SiLU(inplace=True),
         )
         self.out_channels = base_channels * 4
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.encoder(x)
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x1 = self.layer1(x)
+        x2 = self.layer2(x1)
+        x3 = self.layer3(x2)
+        return x1, x2, x3
 
 
 class IMUConditionedFusion(nn.Module):  # type: ignore[misc]
@@ -132,7 +139,7 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
-    """Main model: RGB + IMU -> Events."""
+    """Main model: RGB + IMU -> Events with skip connections."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -144,15 +151,46 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         self.fusion = IMUConditionedFusion(
             rgb_channels=self.rgb_encoder.out_channels, imu_dim=config.imu_hidden_dim
         )
-        self.event_head = EventPredictionHead(
-            in_channels=self.rgb_encoder.out_channels, out_size=config.image_size
+        # Decoder with skip connections
+        base = config.base_channels
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(base * 4, base * 2, 4, stride=2, padding=1),
+            nn.BatchNorm2d(base * 2),
+            nn.SiLU(inplace=True),
         )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(base * 4, base, 4, stride=2, padding=1),
+            nn.BatchNorm2d(base),
+            nn.SiLU(inplace=True),
+        )
+        self.up3 = nn.Sequential(
+            nn.ConvTranspose2d(base * 2, base, 4, stride=2, padding=1),
+            nn.BatchNorm2d(base),
+            nn.SiLU(inplace=True),
+        )
+        self.final = nn.Conv2d(base, 2, 3, padding=1)
+        self.out_size = config.image_size
 
     def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
         imu_features = self.imu_encoder(imu_seq)
-        rgb_features = self.rgb_encoder(image)
-        fused_features = self.fusion(rgb_features, imu_features)
-        return self.event_head(fused_features)
+        x1, x2, x3 = self.rgb_encoder(image)
+        fused = self.fusion(x3, imu_features)
+
+        # Decoder with skip connections
+        d1 = self.up1(fused)
+        if d1.shape[2:] != x2.shape[2:]:
+            d1 = F.interpolate(d1, size=x2.shape[2:], mode="bilinear", align_corners=False)
+        d1 = torch.cat([d1, x2], dim=1)
+        d2 = self.up2(d1)
+        if d2.shape[2:] != x1.shape[2:]:
+            d2 = F.interpolate(d2, size=x1.shape[2:], mode="bilinear", align_corners=False)
+        d2 = torch.cat([d2, x1], dim=1)
+        d3 = self.up3(d2)
+        events = self.final(d3)
+
+        if events.shape[2:] != self.out_size:
+            events = F.interpolate(events, size=self.out_size, mode="bilinear", align_corners=False)
+        return events
 
 
 # ---------------------------------------------------------------------------
