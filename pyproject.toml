@@ -47,14 +47,16 @@ dependencies = [
 v2e = "v2e:main"
 ddd_extract_data = "dataset_scripts.ddd.ddd_extract_data:main"
 
-[project.optional-dependencies.dev]
-ruff = [">=0.5.0"]
-mypy = []
-pytest = []
-pytest-cov = []
-pre-commit = []
-types-numpy = []
-types-Pillow = []
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.5.0",
+  "mypy",
+  "pytest",
+  "pytest-cov",
+  "pre-commit",
+  "types-numpy",
+  "types-Pillow",
+]
 
 [tool.ruff]
 line-length = 100
