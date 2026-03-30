@@ -1,1 +1,3 @@
-commit\tevent_bpb\tpeak_memory_gb\tstatus\tdescription\n8cca10f\t0.000769\t0.5\tkeep\tgradient accumulation (effective batch=4) - rerun after type fix
+commit	event_bpb	peak_memory_gb	status	description
+a709f01	0.000000	0.0	crash	cross-attention fusion - numerical instability with focal loss
+9742015	0.000769	0.5	keep	gradient accumulation (effective batch=4)
