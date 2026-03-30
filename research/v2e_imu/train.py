@@ -219,7 +219,7 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
-    """Main model: RGB + IMU -> Events with AdaIN-style fusion."""
+    """Main model: RGB + IMU -> Events with Multi-scale FiLM."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -228,8 +228,10 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         self.rgb_encoder = RGBEncoder(
             in_channels=config.rgb_channels, base_channels=config.base_channels
         )
-        # AdaIN-style fusion (normalize then modulate)
-        self.fusion = AdaINFusion(base_channels=config.base_channels, imu_dim=config.imu_hidden_dim)
+        # Multi-scale FiLM modulation (applies at ALL encoder layers)
+        self.fusion = MultiScaleFiLM(
+            base_channels=config.base_channels, imu_dim=config.imu_hidden_dim
+        )
         # Decoder with skip connections
         base = config.base_channels
         self.up1 = nn.Sequential(
@@ -278,8 +280,8 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 
 # Model architecture
-BASE_CHANNELS = 48  # Experiment: wider model
-IMU_HIDDEN_DIM = 256  # Experiment: larger IMU hidden dim
+BASE_CHANNELS = 32  # Reduced for faster iteration with synthetic data
+IMU_HIDDEN_DIM = 128  # Reduced for faster iteration
 
 # Training
 TOTAL_BATCH_SIZE = 32
