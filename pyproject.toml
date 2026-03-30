@@ -40,7 +40,6 @@ dependencies = [
   "screeninfo",
   "easygui",
   "scikit-image>=0.21",
-  "dv-processing",
 ]
 
 [project.scripts]
@@ -48,6 +47,9 @@ v2e = "v2e:main"
 ddd_extract_data = "dataset_scripts.ddd.ddd_extract_data:main"
 
 [project.optional-dependencies]
+aedat4 = [
+  "dv-processing",
+]
 dev = [
   "ruff>=0.5.0",
   "mypy",
