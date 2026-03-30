@@ -75,17 +75,17 @@ class RGBEncoder(nn.Module):  # type: ignore[misc]
         super().__init__()
         self.layer1 = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1),
-            nn.BatchNorm2d(base_channels),
+            nn.GroupNorm(8, base_channels),
             nn.SiLU(inplace=True),
         )
         self.layer2 = nn.Sequential(
             nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1),
-            nn.BatchNorm2d(base_channels * 2),
+            nn.GroupNorm(8, base_channels * 2),
             nn.SiLU(inplace=True),
         )
         self.layer3 = nn.Sequential(
             nn.Conv2d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1),
-            nn.BatchNorm2d(base_channels * 4),
+            nn.GroupNorm(8, base_channels * 4),
             nn.SiLU(inplace=True),
         )
         self.out_channels = base_channels * 4
@@ -155,17 +155,17 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         base = config.base_channels
         self.up1 = nn.Sequential(
             nn.ConvTranspose2d(base * 4, base * 2, 4, stride=2, padding=1),
-            nn.BatchNorm2d(base * 2),
+            nn.GroupNorm(8, base * 2),
             nn.SiLU(inplace=True),
         )
         self.up2 = nn.Sequential(
             nn.ConvTranspose2d(base * 4, base, 4, stride=2, padding=1),
-            nn.BatchNorm2d(base),
+            nn.GroupNorm(8, base),
             nn.SiLU(inplace=True),
         )
         self.up3 = nn.Sequential(
             nn.ConvTranspose2d(base * 2, base, 4, stride=2, padding=1),
-            nn.BatchNorm2d(base),
+            nn.GroupNorm(8, base),
             nn.SiLU(inplace=True),
         )
         self.final = nn.Conv2d(base, 2, 3, padding=1)
