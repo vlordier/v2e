@@ -26,6 +26,7 @@ from prepare_data import (
     evaluate_combined_metric,
     make_dataloader,
 )
+from torch.utils.data import DataLoader
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -47,10 +48,10 @@ class ModelConfig:
     event_channels: int = 2  # positive and negative
 
 
-class IMUEncoder(nn.Module):
+class IMUEncoder(nn.Module):  # type: ignore[misc]
     """Encode IMU sequences into feature vectors."""
 
-    def __init__(self, input_dim: int = 6, hidden_dim: int = 128, num_layers: int = 2):
+    def __init__(self, input_dim: int = 6, hidden_dim: int = 128, num_layers: int = 2) -> None:
         super().__init__()
         self.lstm = nn.LSTM(
             input_dim, hidden_dim, num_layers=num_layers, batch_first=True, bidirectional=True
@@ -59,20 +60,18 @@ class IMUEncoder(nn.Module):
         self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, imu_seq: torch.Tensor) -> torch.Tensor:
-        # imu_seq: (B, seq_len, 6)
         lstm_out, (h_n, _) = self.lstm(imu_seq)
         h_forward = h_n[-2]
         h_backward = h_n[-1]
         h_cat = torch.cat([h_forward, h_backward], dim=-1)
         imu_features = self.fc(h_cat)
-        imu_features = self.norm(imu_features)
-        return imu_features
+        return self.norm(imu_features)
 
 
-class RGBEncoder(nn.Module):
+class RGBEncoder(nn.Module):  # type: ignore[misc]
     """Encode grayscale images into feature maps."""
 
-    def __init__(self, in_channels: int = 1, base_channels: int = 32):
+    def __init__(self, in_channels: int = 1, base_channels: int = 32) -> None:
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1),
@@ -91,10 +90,10 @@ class RGBEncoder(nn.Module):
         return self.encoder(x)
 
 
-class IMUConditionedFusion(nn.Module):
+class IMUConditionedFusion(nn.Module):  # type: ignore[misc]
     """Modulate RGB features with IMU information."""
 
-    def __init__(self, rgb_channels: int, imu_dim: int = 128):
+    def __init__(self, rgb_channels: int, imu_dim: int = 128) -> None:
         super().__init__()
         self.imu_to_scale = nn.Sequential(nn.Linear(imu_dim, rgb_channels), nn.Sigmoid())
         self.imu_to_bias = nn.Sequential(nn.Linear(imu_dim, rgb_channels), nn.Tanh())
@@ -106,10 +105,10 @@ class IMUConditionedFusion(nn.Module):
         return rgb_features * scale + bias
 
 
-class EventPredictionHead(nn.Module):
+class EventPredictionHead(nn.Module):  # type: ignore[misc]
     """Predict events from features."""
 
-    def __init__(self, in_channels: int, out_size: tuple[int, int]):
+    def __init__(self, in_channels: int, out_size: tuple[int, int]) -> None:
         super().__init__()
         self.out_size = out_size
         self.decoder = nn.Sequential(
@@ -132,18 +131,12 @@ class EventPredictionHead(nn.Module):
         return events
 
 
-class EventPredictor(nn.Module):
-    """
-    Main model: RGB + IMU -> Events
+class EventPredictor(nn.Module):  # type: ignore[misc]
+    """Main model: RGB + IMU -> Events."""
 
-    IMU conditions RGB processing.
-    Events are predicted as 2-channel map (positive/negative).
-    """
-
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-
         self.imu_encoder = IMUEncoder(input_dim=6, hidden_dim=config.imu_hidden_dim)
         self.rgb_encoder = RGBEncoder(
             in_channels=config.rgb_channels, base_channels=config.base_channels
@@ -156,17 +149,10 @@ class EventPredictor(nn.Module):
         )
 
     def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
-        # Encode
         imu_features = self.imu_encoder(imu_seq)
         rgb_features = self.rgb_encoder(image)
-
-        # Fuse
         fused_features = self.fusion(rgb_features, imu_features)
-
-        # Predict events
-        events = self.event_head(fused_features)
-
-        return events
+        return self.event_head(fused_features)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +160,7 @@ class EventPredictor(nn.Module):
 # ---------------------------------------------------------------------------
 
 # Model architecture
-BASE_CHANNELS = 32
+BASE_CHANNELS = 48  # Experiment: wider model
 IMU_HIDDEN_DIM = 128
 
 # Training
@@ -208,64 +194,68 @@ def get_lr_multiplier(progress: float) -> float:
 def get_peak_memory_mb() -> float:
     """Get peak GPU memory in MB."""
     if torch.cuda.is_available():
-        return torch.cuda.max_memory_allocated() / 1024 / 1024
+        return float(torch.cuda.max_memory_allocated() / 1024 / 1024)
     return 0.0
 
 
-def train():
-    """Main training function."""
-    # Setup device
+def setup_device() -> str:
+    """Setup and return the device."""
     if torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
-    print(f"Device: {device}")
-    print(f"Time budget: {TIME_BUDGET}s")
 
-    # Create model
-    config = ModelConfig(
-        base_channels=BASE_CHANNELS,
-        imu_hidden_dim=IMU_HIDDEN_DIM,
-    )
+def create_model(device: str) -> tuple[EventPredictor, int]:
+    """Create model and return it with parameter count."""
+    config = ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM)
     model = EventPredictor(config).to(device)
-
-    # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {num_params / 1e6:.2f}M")
+    return model, num_params
 
-    # Create dataloaders
-    train_loader = make_dataloader(
-        data_dir=DATA_DIR,
-        split="train",
-        batch_size=DEVICE_BATCH_SIZE,
-        seq_len=MAX_SEQ_LEN,
-        image_size=IMAGE_SIZE,
+
+def training_step(
+    model: EventPredictor,
+    optimizer: torch.optim.Optimizer,
+    batch: dict[str, torch.Tensor],
+    device: str,
+) -> float:
+    """Perform one training step and return loss."""
+    images = batch["image"].to(device)
+    imu_seq = batch["imu_seq"].to(device)
+    gt_events = batch["events"].to(device)
+
+    optimizer.zero_grad()
+    pred_events = model(images, imu_seq)
+    loss = F.mse_loss(pred_events, gt_events)
+    loss.backward()
+    optimizer.step()
+    return float(loss.item())
+
+
+def print_progress(
+    step: int, progress: float, loss: float, lrm: float, dt: float, remaining: float
+) -> None:
+    """Print training progress."""
+    pct_done = 100 * progress
+    tok_per_sec = int(TOTAL_BATCH_SIZE / dt) if dt > 0 else 0
+    print(
+        f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {loss:.6f} | "
+        f"lrm: {lrm:.2f} | dt: {dt * 1000:.0f}ms | tok/sec: {tok_per_sec:,} | "
+        f"remaining: {remaining:.0f}s ",
+        end="",
+        flush=True,
     )
 
-    val_loader = make_dataloader(
-        data_dir=DATA_DIR,
-        split="val",
-        batch_size=FINAL_EVAL_BATCH_SIZE,
-        seq_len=MAX_SEQ_LEN,
-        image_size=IMAGE_SIZE,
-    )
 
-    # Create optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=LEARNING_RATE,
-        weight_decay=WEIGHT_DECAY,
-    )
-
-    # Gradient accumulation
-    grad_accum_steps = TOTAL_BATCH_SIZE // DEVICE_BATCH_SIZE
-    print(f"Gradient accumulation steps: {grad_accum_steps}")
-
-    # Training loop
-    t_start = time.time()
+def run_training_loop(
+    model: EventPredictor,
+    optimizer: torch.optim.Optimizer,
+    train_loader: DataLoader,
+    device: str,
+) -> tuple[float, int]:
+    """Run the training loop and return total time and step count."""
     total_training_time = 0.0
     step = 0
     smooth_train_loss = 0.0
@@ -276,89 +266,95 @@ def train():
     while True:
         t0 = time.time()
 
-        # Get batch
         try:
             batch = next(train_iter)
         except StopIteration:
             train_iter = iter(train_loader)
             batch = next(train_iter)
 
-        images = batch["image"].to(device)
-        imu_seq = batch["imu_seq"].to(device)
-        gt_events = batch["events"].to(device)
+        loss_val = training_step(model, optimizer, batch, device)
 
-        # Forward pass
-        pred_events = model(images, imu_seq)
-        loss = F.mse_loss(pred_events, gt_events)
-
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # Update timing
         dt = time.time() - t0
         total_training_time += dt
 
-        # Update smooth loss
         ema_beta = 0.9
-        smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * loss.item()
+        smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * loss_val
         debiased_smooth_loss = smooth_train_loss / (1 - ema_beta ** (step + 1))
 
-        # Learning rate schedule
         progress = min(total_training_time / TIME_BUDGET, 1.0)
         lrm = get_lr_multiplier(progress)
         for param_group in optimizer.param_groups:
             param_group["lr"] = LEARNING_RATE * lrm
 
-        # Print progress
-        pct_done = 100 * progress
-        tok_per_sec = int(TOTAL_BATCH_SIZE / dt) if dt > 0 else 0
         remaining = max(0.0, TIME_BUDGET - total_training_time)
-
-        print(
-            f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | "
-            f"lrm: {lrm:.2f} | dt: {dt * 1000:.0f}ms | tok/sec: {tok_per_sec:,} | "
-            f"remaining: {remaining:.0f}s ",
-            end="",
-            flush=True,
-        )
+        print_progress(step, progress, debiased_smooth_loss, lrm, dt, remaining)
 
         step += 1
 
-        # Check if done
         if total_training_time >= TIME_BUDGET:
             break
 
-        # Garbage collection
         if step % 1000 == 0:
             gc.collect()
 
     print()
+    return total_training_time, step
+
+
+def print_results(
+    eval_metrics: dict[str, float],
+    total_training_time: float,
+    total_time: float,
+    num_steps: int,
+    num_params: int,
+    peak_vram_mb: float,
+) -> None:
+    """Print final results in standard format."""
+    print("---")
+    print(f"event_bpb: {eval_metrics['event_bpb']:.6f}")
+    print(f"event_mse: {eval_metrics['event_mse']:.6f}")
+    print(f"training_seconds: {total_training_time:.1f}")
+    print(f"total_seconds: {total_time:.1f}")
+    print(f"peak_vram_mb: {peak_vram_mb:.1f}")
+    print(f"samples_per_sec: {eval_metrics['samples_per_sec']:.1f}")
+    print(f"num_steps: {num_steps}")
+    print(f"num_params_M: {num_params / 1e6:.2f}")
+    print(f"base_channels: {BASE_CHANNELS}")
+    print(f"imu_hidden_dim: {IMU_HIDDEN_DIM}")
+
+
+def train() -> None:
+    """Main training function."""
+    device = setup_device()
+    print(f"Device: {device}")
+    print(f"Time budget: {TIME_BUDGET}s")
+
+    model, num_params = create_model(device)
+    print(f"Model parameters: {num_params / 1e6:.2f}M")
+
+    train_loader = make_dataloader(DATA_DIR, "train", DEVICE_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
+    val_loader = make_dataloader(DATA_DIR, "val", FINAL_EVAL_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+
+    grad_accum_steps = TOTAL_BATCH_SIZE // DEVICE_BATCH_SIZE
+    print(f"Gradient accumulation steps: {grad_accum_steps}")
+
+    t_start = time.time()
+    total_training_time, num_steps = run_training_loop(model, optimizer, train_loader, device)
+
     t_train = time.time()
     print(f"Training completed in {t_train - t_start:.1f}s")
 
-    # Final evaluation
     print("Starting final eval...")
     eval_metrics = evaluate_combined_metric(model, val_loader, device, EVAL_SAMPLES)
     t_eval = time.time()
     print(f"Final eval completed in {t_eval - t_train:.1f}s")
 
-    # Get memory usage
     peak_vram_mb = get_peak_memory_mb()
-
-    # Print results in standard format
-    print("---")
-    print(f"event_bpb: {eval_metrics['event_bpb']:.6f}")
-    print(f"event_mse: {eval_metrics['event_mse']:.6f}")
-    print(f"training_seconds: {total_training_time:.1f}")
-    print(f"total_seconds: {t_eval - t_start:.1f}")
-    print(f"peak_vram_mb: {peak_vram_mb:.1f}")
-    print(f"samples_per_sec: {eval_metrics['samples_per_sec']:.1f}")
-    print(f"num_steps: {step}")
-    print(f"num_params_M: {num_params / 1e6:.2f}")
-    print(f"base_channels: {BASE_CHANNELS}")
-    print(f"imu_hidden_dim: {IMU_HIDDEN_DIM}")
+    print_results(
+        eval_metrics, total_training_time, t_eval - t_start, num_steps, num_params, peak_vram_mb
+    )
 
 
 if __name__ == "__main__":

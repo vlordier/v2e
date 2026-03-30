@@ -24,22 +24,22 @@ SMALL_SEQUENCES = [
 BASE_URL = "https://download.ifi.uzh.ch/rpg/DSEC/train/"
 
 
-class DownloadProgressBar(tqdm):
+class DownloadProgressBar(tqdm):  # type: ignore[misc]
     """Progress bar for downloads."""
 
-    def update_to(self, b=1, bsize=1, tsize=None):
+    def update_to(self, b: int = 1, bsize: int = 1, tsize: int | None = None) -> None:
         if tsize is not None:
             self.total = tsize
         self.update(b * bsize - self.n)
 
 
-def download_file(url: str, output_path: str):
+def download_file(url: str, output_path: str) -> None:
     """Download a file with progress bar."""
     with DownloadProgressBar(unit="B", unit_scale=True, miniters=1, desc=url.split("/")[-1]) as t:
         urllib.request.urlretrieve(url, filename=output_path, reporthook=t.update_to)
 
 
-def download_sequence(sequence: str, output_dir: str, components: list = None):
+def download_sequence(sequence: str, output_dir: str, components: list[str] | None = None) -> None:
     """
     Download a DSEC sequence.
 
@@ -100,7 +100,7 @@ def download_sequence(sequence: str, output_dir: str, components: list = None):
             print(f"  You may need to download manually from: {url}")
 
 
-def create_sample_event_data(output_dir: str, num_events: int = 100000):
+def create_sample_event_data(output_dir: str, num_events: int = 100000) -> str:
     """
     Create synthetic event data for testing when download is not available.
 
@@ -148,7 +148,7 @@ def create_sample_event_data(output_dir: str, num_events: int = 100000):
     return str(h5_path)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Download DSEC dataset")
     parser.add_argument(
         "--sequence", type=str, default="thun_00_a", help="Sequence name to download"

@@ -98,10 +98,10 @@ SMALL_SEQUENCES = [
 ]
 
 
-class DownloadProgressBar(tqdm):
+class DownloadProgressBar(tqdm):  # type: ignore[misc]
     """Progress bar for downloads."""
 
-    def update_to(self, b=1, bsize=1, tsize=None):
+    def update_to(self, b: int = 1, bsize: int = 1, tsize: int | None = None) -> None:
         if tsize is not None:
             self.total = tsize
         self.update(b * bsize - self.n)
@@ -122,7 +122,7 @@ def download_file(url: str, output_path: str) -> bool:
         return False
 
 
-def extract_zip(zip_path: str, extract_dir: str):
+def extract_zip(zip_path: str, extract_dir: str) -> None:
     """Extract a ZIP file."""
     print(f"  Extracting {zip_path} to {extract_dir}...")
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
@@ -130,7 +130,7 @@ def extract_zip(zip_path: str, extract_dir: str):
     os.remove(zip_path)  # Remove ZIP after extraction
 
 
-def download_sequence(sequence_name: str, output_dir: str):
+def download_sequence(sequence_name: str, output_dir: str) -> bool:
     """
     Download a UZH FPV sequence.
 
@@ -161,7 +161,7 @@ def download_sequence(sequence_name: str, output_dir: str):
 
     # Download DAVIS data (events + images + IMU + GT)
     davis_zip = seq_dir / f"{sequence_name}_davis_with_gt.zip"
-    davis_url = seq_info["davis_zip"]
+    davis_url = str(seq_info["davis_zip"])
     print(f"  Downloading DAVIS data from {davis_url}")
 
     if not download_file(davis_url, str(davis_zip)):
@@ -173,7 +173,7 @@ def download_sequence(sequence_name: str, output_dir: str):
     return True
 
 
-def create_synthetic_fpv_data(output_dir: str, num_samples: int = 1000):
+def create_synthetic_fpv_data(output_dir: str, num_samples: int = 1000) -> str:
     """
     Create synthetic FPV-like data for testing when download is not available.
 
@@ -237,7 +237,7 @@ def create_synthetic_fpv_data(output_dir: str, num_samples: int = 1000):
     return str(sample_dir)
 
 
-def list_sequences():
+def list_sequences() -> None:
     """List available sequences."""
     print("Available UZH FPV sequences for download:")
     print()
@@ -248,7 +248,7 @@ def list_sequences():
         print()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Download UZH FPV dataset")
     parser.add_argument(
         "--sequence", type=str, default="indoor_forward_3", help="Sequence name to download"
