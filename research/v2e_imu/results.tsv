@@ -2,3 +2,4 @@ commit	event_bpb	peak_memory_gb	status	description
 71f3881	0.012287	0.5	keep	baseline: 0.87M params, AdamW, lr=1e-3, bs=2
 50b511e	0.005471	0.5	keep	wider model: base_channels=48, 1.06M params
 cc20a73	0.002808	0.5	keep	SiLU activation instead of ReLU
+0196fc3	0.001959	0.5	keep	larger IMU hidden dim: 256, 2.80M params
