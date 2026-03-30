@@ -1,9 +1,1 @@
-commit	event_bpb	peak_memory_gb	status	description
-71f3881	0.012287	0.5	keep	baseline: 0.87M params, AdamW, lr=1e-3, bs=2
-50b511e	0.005471	0.5	keep	wider model: base_channels=48, 1.06M params
-cc20a73	0.002808	0.5	keep	SiLU activation instead of ReLU
-0196fc3	0.001959	0.5	keep	larger IMU hidden dim: 256, 2.80M params
-a6b0412	0.001909	0.5	keep	no weight decay (was 1e-4)
-47cef87	0.001936	0.5	discard	deeper RGB encoder (4 layers), 3.76M params
-b116b3c	0.001822	0.5	keep	data augmentation: flip, IMU noise
-e58644c	0.001691	0.5	keep	UNet-style decoder with skip connections, 3.07M params
+commit\tevent_bpb\tpeak_memory_gb\tstatus\tdescription\n8cca10f\t0.000769\t0.5\tkeep\tgradient accumulation (effective batch=4) - rerun after type fix
