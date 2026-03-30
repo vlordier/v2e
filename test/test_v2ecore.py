@@ -63,7 +63,10 @@ def test_emulator_thresholds(pos_thres, neg_thres, sigma_thres, device, mock_cv2
     if sigma_thres > 0:
         assert torch.std(emu.pos_thres) > 0
     else:
-        assert torch.all(emu.pos_thres == pos_thres)
+        if isinstance(emu.pos_thres, torch.Tensor):
+            assert torch.all(emu.pos_thres == pos_thres)
+        else:
+            assert emu.pos_thres == pos_thres
 
 
 def test_emulator_generate_events_first_frame_returns_none(emulator, mock_cv2):

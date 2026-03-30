@@ -26,20 +26,20 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-  "numpy>=1.24,<2.0",
+  "numpy>=2.0",
   "argcomplete",
   "engineering-notation",
   "tqdm",
   "opencv-python",
-  "h5py",
-  "torch",
-  "torchvision",
-  "numba",
-  "matplotlib",
+  "h5py>=3.10",
+  "torch>=2.0",
+  "torchvision>=0.15",
+  "numba>=0.60",
+  "matplotlib>=3.7",
   "plyer",
   "screeninfo",
   "easygui",
-  "scikit-image",
+  "scikit-image>=0.21",
   "dv-processing",
 ]
 
