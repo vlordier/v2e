@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 
 MAX_SEQ_LEN = 50  # IMU sequence length
 IMAGE_SIZE = (260, 346)  # DAVIS346 resolution
-TIME_BUDGET = 600  # 10 minutes per experiment (in seconds)
+TIME_BUDGET = 900  # 15 minutes per experiment (increased for proper evaluation)
 EVAL_SAMPLES = 100  # Number of samples for evaluation (reduced for speed)
 EVENT_WINDOW_MS = 33  # Event accumulation window (30 Hz)
 
