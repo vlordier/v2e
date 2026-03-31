@@ -2,6 +2,25 @@
 
 ## ✅ Ready to Run Scripts
 
+### 0. Robust Metrics 📊
+**Script:** `robust_metrics.py`
+
+Comprehensive evaluation beyond MSE:
+- Event sparsity analysis
+- Temporal consistency
+- Spatial coherence
+- Precision/Recall
+- Contrast sensitivity
+- Rate-motion correlation
+
+```bash
+uv run python robust_metrics.py
+```
+
+**Output:** `robust_metrics.json` with all metrics.
+
+---
+
 ### 1. Event Rate Regularization ✅
 **Already implemented in `train.py`**
 
