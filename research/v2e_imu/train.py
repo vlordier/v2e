@@ -484,17 +484,12 @@ def training_step(
     imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)  # (B,)
     depth_motion_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach())
 
-    # Event rate regularization: prevent hallucinating too many events
-    # Penalize when predicted event rate is much higher than ground truth
-    pred_event_rate = pred_events.abs().mean()
-    gt_event_rate = gt_events.abs().mean()
-    rate_ratio = pred_event_rate / (gt_event_rate + 1e-6)
-    rate_penalty = F.relu(rate_ratio - 1.2) ** 2  # Only penalize if >20% more events
-
+    # V5: REMOVED rate_penalty - it was fundamentally broken for large datasets
+    # The model should learn natural event statistics from data, not artificial penalties
     # Combined loss with weighting
     depth_weight = 0.1  # Auxiliary task weight
-    rate_weight = 0.001  # V4: Even lower to prevent event suppression (was 0.01)
-    loss = event_loss + depth_weight * depth_motion_loss + rate_weight * rate_penalty
+    loss = event_loss + depth_weight * depth_motion_loss
+    # No rate_penalty!
 
     loss.backward()
     optimizer.step()
