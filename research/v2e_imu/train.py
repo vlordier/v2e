@@ -493,7 +493,7 @@ def training_step(
 
     # Combined loss with weighting
     depth_weight = 0.1  # Auxiliary task weight
-    rate_weight = 0.01  # OPTIMIZED via HPO analysis (was 0.5, too aggressive)
+    rate_weight = 0.001  # V4: Even lower to prevent event suppression (was 0.01)
     loss = event_loss + depth_weight * depth_motion_loss + rate_weight * rate_penalty
 
     loss.backward()
