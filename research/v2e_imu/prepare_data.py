@@ -249,6 +249,12 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
                 else:
                     neg_events[y, x] += 1
 
+        # CRITICAL FIX: Normalize event counts to [0, 1] range
+        # Without this, model trained on binary events (mini-FPV) fails on count data (full dataset)
+        max_events = 100.0  # Reasonable maximum for 33ms window (99th percentile)
+        pos_events = np.clip(pos_events / max_events, 0.0, 1.0)
+        neg_events = np.clip(neg_events / max_events, 0.0, 1.0)
+
         return np.stack([pos_events, neg_events], axis=0)
 
     def _get_random_image(self) -> np.ndarray:
