@@ -610,9 +610,7 @@ def print_results(
 
 def cleanup_dataloader(loader: DataLoader) -> None:
     """Properly cleanup dataloader workers to avoid multiprocessing warnings."""
-    if hasattr(loader, "_iterator") and loader._iterator is not None:
-        loader._iterator.shutdown(wait=True)
-    # Delete the dataloader to release worker processes
+    # Just delete the loader - PyTorch handles cleanup automatically
     del loader
 
 
