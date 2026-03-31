@@ -112,56 +112,28 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
                     )
 
     def _load_events_data(self, data_dir: Path) -> None:
-        """Load event data efficiently using chunked reading."""
+        """Load event data efficiently using numpy."""
         events_file = data_dir / "events.txt"
         if not events_file.exists():
             return
 
         print("Loading events (this may take a moment)...")
-        chunk_size = 1000000
-        all_timestamps: list[float] = []
-        all_x: list[int] = []
-        all_y: list[int] = []
-        all_polarity: list[int] = []
-
         try:
-            with open(events_file) as f:
-                chunk_timestamps: list[float] = []
-                chunk_x: list[int] = []
-                chunk_y: list[int] = []
-                chunk_polarity: list[int] = []
+            # Use numpy's fast text loading
+            data = np.loadtxt(
+                events_file,
+                delimiter=" ",
+                skiprows=1,  # Skip header comment
+                usecols=(0, 1, 2, 3),
+                dtype=np.float64,
+            )
 
-                for line in f:
-                    if line.startswith("#"):
-                        continue
-                    parts = line.strip().split()
-                    if len(parts) >= 4:
-                        chunk_timestamps.append(float(parts[0]))
-                        chunk_x.append(int(parts[1]))
-                        chunk_y.append(int(parts[2]))
-                        chunk_polarity.append(int(parts[3]))
+            self.event_timestamps = data[:, 0]
+            self.event_x = data[:, 1].astype(np.int32)
+            self.event_y = data[:, 2].astype(np.int32)
+            self.event_polarity = data[:, 3].astype(np.int8)
 
-                    if len(chunk_timestamps) >= chunk_size:
-                        all_timestamps.extend(chunk_timestamps)
-                        all_x.extend(chunk_x)
-                        all_y.extend(chunk_y)
-                        all_polarity.extend(chunk_polarity)
-                        chunk_timestamps = []
-                        chunk_x = []
-                        chunk_y = []
-                        chunk_polarity = []
-
-                if chunk_timestamps:
-                    all_timestamps.extend(chunk_timestamps)
-                    all_x.extend(chunk_x)
-                    all_y.extend(chunk_y)
-                    all_polarity.extend(chunk_polarity)
-
-            self.event_timestamps = np.array(all_timestamps, dtype=np.float64)
-            self.event_x = np.array(all_x, dtype=np.int32)
-            self.event_y = np.array(all_y, dtype=np.int32)
-            self.event_polarity = np.array(all_polarity, dtype=np.int8)
-            print(f"Loaded {len(self.event_timestamps)} events")
+            print(f"Loaded {len(self.event_timestamps):,} events")
         except Exception as e:
             print(f"Error loading events: {e}")
             self.event_timestamps = np.array([], dtype=np.float64)
@@ -306,7 +278,7 @@ def make_dataloader(
     batch_size: int,
     seq_len: int = MAX_SEQ_LEN,
     image_size: tuple[int, int] = IMAGE_SIZE,
-    num_workers: int = 0,
+    num_workers: int = 4,  # Use multiple workers for faster loading
 ) -> DataLoader:
     """Create a dataloader for the given split."""
     dataset = FPVDataset(
@@ -322,6 +294,9 @@ def make_dataloader(
         shuffle=(split == "train"),
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=(num_workers > 0),  # Keep workers alive between epochs
+        prefetch_factor=2 if num_workers > 0 else None,  # Pre-fetch batches
+        timeout=60,  # Timeout for data loading
     )
 
 
