@@ -328,6 +328,10 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
 BASE_CHANNELS = 32  # Reduced for faster iteration with synthetic data
 IMU_HIDDEN_DIM = 128  # Reduced for faster iteration
 
+# Knowledge distillation (optional)
+USE_DISTILLATION = False  # Set to True to distill from 3D-aware teacher
+DISTILLATION_WEIGHT = 0.5  # Balance between task loss and distillation loss
+
 # Training
 TOTAL_BATCH_SIZE = 32
 DEVICE_BATCH_SIZE = 4
@@ -460,7 +464,7 @@ def training_step(
     batch: dict[str, torch.Tensor],
     device: str,
 ) -> float:
-    """Perform one training step with multi-task learning (events + depth)."""
+    """Perform one training step with multi-task learning and event regularization."""
     images = batch["image"].to(device)
     imu_seq = batch["imu_seq"].to(device)
     gt_events = batch["events"].to(device)
@@ -480,9 +484,17 @@ def training_step(
     imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)  # (B,)
     depth_motion_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach())
 
+    # Event rate regularization: prevent hallucinating too many events
+    # Penalize when predicted event rate is much higher than ground truth
+    pred_event_rate = pred_events.abs().mean()
+    gt_event_rate = gt_events.abs().mean()
+    rate_ratio = pred_event_rate / (gt_event_rate + 1e-6)
+    rate_penalty = F.relu(rate_ratio - 1.2) ** 2  # Only penalize if >20% more events
+
     # Combined loss with weighting
     depth_weight = 0.1  # Auxiliary task weight
-    loss = event_loss + depth_weight * depth_motion_loss
+    rate_weight = 0.05  # Event hallucination prevention
+    loss = event_loss + depth_weight * depth_motion_loss + rate_weight * rate_penalty
 
     loss.backward()
     optimizer.step()
