@@ -340,28 +340,58 @@ def augment_batch(
     imu_seq: torch.Tensor,
     gt_events: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Apply data augmentation to batch."""
-    # Random horizontal flip
-    if torch.rand(1).item() > 0.5:
-        images = torch.flip(images, dims=[-1])
-        imu_seq = imu_seq.clone()
-        imu_seq[:, :, 0] = -imu_seq[:, :, 0]  # Flip acc_x
-        imu_seq[:, :, 3] = -imu_seq[:, :, 3]  # Flip gyro_x
-        gt_events = torch.flip(gt_events, dims=[-1])
-        gt_events = gt_events.clone()
-        gt_events[:, [0, 1]] = gt_events[:, [1, 0]]  # Swap pos/neg channels
+    """Apply RGB-only data augmentation (no geometric transforms).
 
-    # Random vertical flip
-    if torch.rand(1).item() > 0.5:
-        images = torch.flip(images, dims=[-2])
-        imu_seq = imu_seq.clone()
-        imu_seq[:, :, 1] = -imu_seq[:, :, 1]  # Flip acc_y
-        imu_seq[:, :, 4] = -imu_seq[:, :, 4]  # Flip gyro_y
-        gt_events = torch.flip(gt_events, dims=[-2])
-        gt_events = gt_events.clone()
-        gt_events[:, [0, 1]] = gt_events[:, [1, 0]]  # Swap pos/neg channels
+    Augmentations:
+    - Gaussian noise
+    - Brightness jitter
+    - Contrast jitter
+    - Random occlusions (dropout rectangles)
+    - IMU noise
 
-    # Add noise to IMU
+    Note: No geometric transforms (flip/rotate) to avoid modifying event labels.
+    """
+    B, C, H, W = images.shape
+
+    # 1. Gaussian noise (additive)
+    if torch.rand(1).item() > 0.5:
+        noise_std = torch.rand(1).item() * 0.1  # 0 to 0.1 std
+        images = images + torch.randn_like(images) * noise_std
+        images = images.clamp(0, 1)
+
+    # 2. Brightness jitter (multiply by factor)
+    if torch.rand(1).item() > 0.5:
+        brightness_factor = 0.7 + torch.rand(1).item() * 0.6  # 0.7 to 1.3
+        images = images * brightness_factor
+        images = images.clamp(0, 1)
+
+    # 3. Contrast jitter (scale around mean)
+    if torch.rand(1).item() > 0.5:
+        contrast_factor = 0.7 + torch.rand(1).item() * 0.6  # 0.7 to 1.3
+        mean = images.mean(dim=(1, 2, 3), keepdim=True)
+        images = (images - mean) * contrast_factor + mean
+        images = images.clamp(0, 1)
+
+    # 4. Random occlusions (rectangle dropout)
+    if torch.rand(1).item() > 0.5:
+        # Number of occlusions
+        num_occlusions = torch.randint(1, 4, (1,)).item()
+        for _ in range(num_occlusions):
+            # Random occlusion size (5% to 20% of image)
+            occ_h = int(H * (0.05 + torch.rand(1).item() * 0.15))
+            occ_w = int(W * (0.05 + torch.rand(1).item() * 0.15))
+
+            # Random position
+            y = torch.randint(0, H - occ_h, (1,)).item()
+            x = torch.randint(0, W - occ_w, (1,)).item()
+
+            # Apply occlusion (set to 0 or random value)
+            if torch.rand(1).item() > 0.5:
+                images[:, :, y : y + occ_h, x : x + occ_w] = 0  # Black occlusion
+            else:
+                images[:, :, y : y + occ_h, x : x + occ_w] = torch.rand(1).item()  # Random gray
+
+    # 5. IMU noise
     if torch.rand(1).item() > 0.5:
         noise = torch.randn_like(imu_seq) * 0.01
         imu_seq = imu_seq + noise
