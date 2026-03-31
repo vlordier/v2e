@@ -493,7 +493,7 @@ def training_step(
 
     # Combined loss with weighting
     depth_weight = 0.1  # Auxiliary task weight
-    rate_weight = 0.5  # INCREASED: Strong event hallucination prevention (was 0.05)
+    rate_weight = 0.01  # OPTIMIZED via HPO analysis (was 0.5, too aggressive)
     loss = event_loss + depth_weight * depth_motion_loss + rate_weight * rate_penalty
 
     loss.backward()

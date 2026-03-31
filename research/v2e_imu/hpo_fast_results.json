@@ -1,0 +1,22 @@
+[
+  {
+    "rate_weight": 0.001,
+    "error": "Command '['uv', 'run', 'python', 'train.py']' timed out after 210 seconds"
+  },
+  {
+    "rate_weight": 0.005,
+    "error": "Command '['uv', 'run', 'python', 'train.py']' timed out after 210 seconds"
+  },
+  {
+    "rate_weight": 0.01,
+    "error": "Command '['uv', 'run', 'python', 'train.py']' timed out after 210 seconds"
+  },
+  {
+    "rate_weight": 0.02,
+    "error": "Command '['uv', 'run', 'python', 'train.py']' timed out after 210 seconds"
+  },
+  {
+    "rate_weight": 0.05,
+    "error": "Command '['uv', 'run', 'python', 'train.py']' timed out after 210 seconds"
+  }
+]
