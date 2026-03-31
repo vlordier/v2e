@@ -364,11 +364,21 @@ def get_peak_memory_mb() -> float:
 
 
 def setup_device() -> str:
-    """Setup and return the device."""
+    """Setup and return the device with optimal settings."""
     if torch.backends.mps.is_available():
+        # Enable MPS graph fallback for unsupported operations
+        os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+        print("MPS GPU acceleration enabled")
+        # Pre-allocate MPS memory for better performance
+        try:
+            torch.mps.empty_cache()
+        except Exception:
+            pass
         return "mps"
     if torch.cuda.is_available():
+        print("CUDA GPU acceleration enabled")
         return "cuda"
+    print("WARNING: No GPU available, using CPU (slow)")
     return "cpu"
 
 
