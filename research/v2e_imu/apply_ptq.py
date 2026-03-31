@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 """
-Post-Training Quantization (PTQ): Convert to INT8 for 4x size reduction.
+Post-Training Quantization (PTQ): Convert to INT8 for 2-3x size reduction.
 
 Usage:
     uv run python apply_ptq.py
 
+Note: PTQ requires x86 CPU with quantization support.
+      On ARM/MPS (Apple Silicon), quantization is not available.
+
 This script:
 1. Loads a trained model
-2. Applies dynamic quantization (INT8)
+2. Applies dynamic quantization (INT8) to Linear layers
 3. Evaluates quantized model
 4. Saves quantized checkpoint
 """
@@ -15,6 +18,7 @@ This script:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Dict
 from prepare_data import (
     DATA_DIR,
     EVAL_SAMPLES,
@@ -24,12 +28,16 @@ from prepare_data import (
 )
 
 
-class CompactStudent(nn.Module):  # type: ignore[misc]
+class CompactStudent(nn.Module):
     """Compact student model for quantization."""
 
-    def __init__(self, base_channels: int = 16, imu_hidden_dim: int = 64) -> None:
+    def __init__(
+        self, base_channels: int = 16, imu_hidden_dim: int = 64
+    ) -> None:
         super().__init__()
-        self.imu_lstm = nn.LSTM(6, imu_hidden_dim, num_layers=1, batch_first=True)
+        self.imu_lstm = nn.LSTM(
+            6, imu_hidden_dim, num_layers=1, batch_first=True
+        )
         self.imu_fc = nn.Linear(imu_hidden_dim, imu_hidden_dim)
         self.imu_norm = nn.LayerNorm(imu_hidden_dim)
 
@@ -37,7 +45,9 @@ class CompactStudent(nn.Module):  # type: ignore[misc]
             nn.Conv2d(1, base_channels, 3, stride=2, padding=1),
             nn.GroupNorm(4, base_channels),
             nn.SiLU(inplace=True),
-            nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1),
+            nn.Conv2d(
+                base_channels, base_channels * 2, 3, stride=2, padding=1
+            ),
             nn.GroupNorm(8, base_channels * 2),
             nn.SiLU(inplace=True),
         )
@@ -52,7 +62,9 @@ class CompactStudent(nn.Module):  # type: ignore[misc]
         )
 
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(base_channels * 2, base_channels, 4, stride=2, padding=1),
+            nn.ConvTranspose2d(
+                base_channels * 2, base_channels, 4, stride=2, padding=1
+            ),
             nn.GroupNorm(4, base_channels),
             nn.SiLU(inplace=True),
             nn.Conv2d(base_channels, 2, 3, padding=1),
@@ -75,33 +87,51 @@ class CompactStudent(nn.Module):  # type: ignore[misc]
         events = self.decoder(rgb_modulated)
 
         if events.shape[2:] != self.out_size:
-            events = F.interpolate(events, size=self.out_size, mode="bilinear", align_corners=False)
+            events = F.interpolate(
+                events, size=self.out_size, mode="bilinear", align_corners=False
+            )
 
         return events
 
 
-def apply_ptq(model_fp32: nn.Module, device: str) -> nn.Module:
+def apply_ptq(
+    model_fp32: nn.Module, device: str
+) -> nn.Module:
     """Apply post-training quantization."""
     params_before = sum(p.numel() for p in model_fp32.parameters())
     print(f"Original model: {params_before / 1e6:.2f}M params")
 
-    # Apply dynamic quantization to Linear and LSTM layers
-    model_quantized = torch.quantization.quantize_dynamic(
-        model_fp32, {nn.Linear, nn.LSTM}, dtype=torch.qint8
-    )
+    # PTQ only works on x86 CPU
+    if device in ["mps", "cuda"]:
+        print(f"⚠️  PTQ not supported on {device}")
+        print("   Use x86 CPU for quantization")
+        print("   Returning unquantized model...")
+        return model_fp32
 
-    params_after = sum(p.numel() for p in model_quantized.parameters())
-    print(f"Quantized model: {params_after / 1e6:.2f}M params")
-    print("Quantized layers: Linear, LSTM → INT8")
-    print("Expected size reduction: 4x")
+    # Apply dynamic quantization to Linear layers
+    print("Quantizing Linear layers to INT8...")
+    try:
+        model_quantized = torch.quantization.quantize_dynamic(
+            model_fp32, {nn.Linear}, dtype=torch.qint8
+        )
 
-    return model_quantized
+        params_after = sum(p.numel() for p in model_quantized.parameters())
+        print(f"Quantized model: {params_after / 1e6:.2f}M params")
+        print("Quantized layers: Linear → INT8")
+        print("Expected size reduction: 2-3x")
+
+        return model_quantized
+    except RuntimeError as e:
+        print(f"⚠️  Quantization failed: {e}")
+        print("   This is expected on ARM/MPS devices")
+        print("   Returning unquantized model...")
+        return model_fp32
 
 
 def evaluate(
     model: nn.Module, dataloader: torch.utils.data.DataLoader, device: str, name: str = "Model"
 ) -> float:
-    """Evaluate model and return float(event_bpb)."""
+    """Evaluate model and return event_bpb."""
     model.eval()
     total_event_loss = 0.0
     total_samples = 0
@@ -116,7 +146,9 @@ def evaluate(
             gt_events = batch["events"].to(device)
 
             pred_events = model(images, imu_seq)
-            event_loss = nn.functional.mse_loss(pred_events, gt_events, reduction="sum")
+            event_loss = nn.functional.mse_loss(
+                pred_events, gt_events, reduction="sum"
+            )
 
             total_event_loss += event_loss.item()
             total_samples += images.shape[0]
@@ -137,6 +169,8 @@ def main() -> None:
     print(f"Device: {device}")
     print("Post-Training Quantization (PTQ)")
     print()
+    print("Note: PTQ requires x86 CPU. On ARM/MPS, this will show limitations.")
+    print()
 
     # Create model
     print("Loading model...")
@@ -147,7 +181,9 @@ def main() -> None:
 
     # Create dataloader
     print("Loading data...")
-    val_loader = make_dataloader(DATA_DIR, "val", 16, MAX_SEQ_LEN, IMAGE_SIZE)
+    val_loader = make_dataloader(
+        DATA_DIR, "val", 16, MAX_SEQ_LEN, IMAGE_SIZE
+    )
 
     # Evaluate FP32 model
     print()
@@ -171,8 +207,8 @@ def main() -> None:
     print(f"INT8 event_bpb: {bpb_int8:.6f}")
     if bpb_fp32 > 0:
         print(f"Accuracy loss: {(bpb_int8 - bpb_fp32) / bpb_fp32 * 100:.2f}%")
-    print("Expected size reduction: 4x")
-    print("Expected speedup: 2-3x (on supported hardware)")
+    print(f"Expected size reduction: 2-3x")
+    print(f"Expected speedup: 2-3x (on x86 CPU with AVX512)")
     print()
 
     # Save quantized model
