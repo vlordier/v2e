@@ -493,7 +493,7 @@ def training_step(
 
     # Combined loss with weighting
     depth_weight = 0.1  # Auxiliary task weight
-    rate_weight = 0.05  # Event hallucination prevention
+    rate_weight = 0.5  # INCREASED: Strong event hallucination prevention (was 0.05)
     loss = event_loss + depth_weight * depth_motion_loss + rate_weight * rate_penalty
 
     loss.backward()
@@ -626,8 +626,56 @@ def cleanup_dataloader(loader: DataLoader) -> None:
     del loader
 
 
-def train() -> None:
-    """Main training function."""
+def save_checkpoint(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    loss: float,
+    filepath: str,
+) -> None:
+    """Save model checkpoint."""
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epoch,
+        "loss": loss,
+        "config": {
+            "base_channels": BASE_CHANNELS,
+            "imu_hidden_dim": IMU_HIDDEN_DIM,
+        },
+    }
+    torch.save(checkpoint, filepath)
+    print(f"✅ Checkpoint saved to: {filepath}")
+
+
+def load_checkpoint(
+    filepath: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | None = None,
+    device: str = "cpu",
+) -> tuple[nn.Module, torch.optim.Optimizer | None, int, float]:
+    """Load model checkpoint."""
+    checkpoint = torch.load(filepath, map_location=device, weights_only=True)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    
+    epoch = checkpoint.get("epoch", 0)
+    loss = checkpoint.get("loss", 0.0)
+    
+    print(f"✅ Checkpoint loaded from: {filepath}")
+    print(f"   Epoch: {epoch}, Loss: {loss:.6f}")
+    
+    return model, optimizer, epoch, loss
+
+
+def train(resume_from: str | None = None) -> None:
+    """Main training function.
+    
+    Args:
+        resume_from: Path to checkpoint to resume from (optional)
+    """
     device = setup_device()
     print(f"Device: {device}")
     print(f"Time budget: {TIME_BUDGET}s")
@@ -644,11 +692,23 @@ def train() -> None:
     grad_accum_steps = TOTAL_BATCH_SIZE // DEVICE_BATCH_SIZE
     print(f"Gradient accumulation steps: {grad_accum_steps}")
 
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    if resume_from and os.path.exists(resume_from):
+        model, optimizer, start_epoch, _ = load_checkpoint(
+            resume_from, model, optimizer, device
+        )
+        print(f"Resuming from epoch {start_epoch}")
+
     t_start = time.time()
     total_training_time, num_steps = run_training_loop(model, optimizer, train_loader, device)
 
     t_train = time.time()
     print(f"Training completed in {t_train - t_start:.1f}s")
+
+    # Save checkpoint
+    checkpoint_path = "3d_aware_model_checkpoint.pt"
+    save_checkpoint(model, optimizer, num_steps, total_training_time, checkpoint_path)
 
     # Cleanup train loader before evaluation
     cleanup_dataloader(train_loader)
