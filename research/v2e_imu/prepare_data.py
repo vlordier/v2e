@@ -12,6 +12,7 @@ Usage:
 """
 
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -278,7 +279,7 @@ def make_dataloader(
     batch_size: int,
     seq_len: int = MAX_SEQ_LEN,
     image_size: tuple[int, int] = IMAGE_SIZE,
-    num_workers: int = 4,  # Use multiple workers for faster loading
+    num_workers: int = 2,  # Use 2 workers (safer for macOS, avoids semaphore issues)
 ) -> DataLoader:
     """Create a dataloader for the given split."""
     dataset = FPVDataset(
@@ -297,6 +298,7 @@ def make_dataloader(
         persistent_workers=(num_workers > 0),  # Keep workers alive between epochs
         prefetch_factor=2 if num_workers > 0 else None,  # Pre-fetch batches
         timeout=60,  # Timeout for data loading
+        multiprocessing_context="fork" if sys.platform != "win32" else None,  # Better for macOS
     )
 
 

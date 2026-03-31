@@ -598,6 +598,14 @@ def print_results(
     print(f"imu_hidden_dim: {IMU_HIDDEN_DIM}")
 
 
+def cleanup_dataloader(loader: DataLoader) -> None:
+    """Properly cleanup dataloader workers to avoid multiprocessing warnings."""
+    if hasattr(loader, "_iterator") and loader._iterator is not None:
+        loader._iterator.shutdown(wait=True)
+    # Delete the dataloader to release worker processes
+    del loader
+
+
 def train() -> None:
     """Main training function."""
     device = setup_device()
@@ -607,6 +615,7 @@ def train() -> None:
     model, num_params = create_model(device)
     print(f"Model parameters: {num_params / 1e6:.2f}M")
 
+    # Create dataloaders
     train_loader = make_dataloader(DATA_DIR, "train", DEVICE_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
     val_loader = make_dataloader(DATA_DIR, "val", FINAL_EVAL_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
 
@@ -621,10 +630,16 @@ def train() -> None:
     t_train = time.time()
     print(f"Training completed in {t_train - t_start:.1f}s")
 
+    # Cleanup train loader before evaluation
+    cleanup_dataloader(train_loader)
+
     print("Starting final eval...")
     eval_metrics = evaluate_combined_metric(model, val_loader, device, EVAL_SAMPLES)
     t_eval = time.time()
     print(f"Final eval completed in {t_eval - t_train:.1f}s")
+
+    # Cleanup val loader
+    cleanup_dataloader(val_loader)
 
     peak_vram_mb = get_peak_memory_mb()
     print_results(
