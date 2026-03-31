@@ -368,10 +368,19 @@ def evaluate_combined_metric(
     device: str,
     num_samples: int = EVAL_SAMPLES,
 ) -> dict[str, float]:
-    """Evaluate model with combined metrics."""
+    """Evaluate model with improved 3D-aware metrics.
+
+    Metrics:
+    - event_bpb: Bits per byte for event prediction (lower is better)
+    - event_mse: Mean squared error on events
+    - event_rate_error: How well event rate matches motion magnitude
+    - depth_motion_corr: Correlation between predicted depth and IMU motion
+    """
     model.eval()
 
     total_event_loss = 0.0
+    total_rate_error = 0.0
+    total_depth_motion_error = 0.0
     total_samples = 0
     start_time = time.time()
 
@@ -384,21 +393,51 @@ def evaluate_combined_metric(
             imu_seq = batch["imu_seq"].to(device)
             gt_events = batch["events"].to(device)
 
-            pred_events = model(images, imu_seq)
-            event_loss = torch.nn.functional.mse_loss(pred_events, gt_events, reduction="sum")
+            # Handle both old (events only) and new (events, depth) model outputs
+            output = model(images, imu_seq)
+            if isinstance(output, tuple):
+                pred_events, pred_depth = output
+            else:
+                pred_events = output
+                pred_depth = None
 
+            # Event prediction loss
+            event_loss = torch.nn.functional.mse_loss(pred_events, gt_events, reduction="sum")
             total_event_loss += event_loss.item()
+
+            # Event rate error: do events correlate with motion?
+            pred_event_rate = pred_events.abs().sum(dim=(1, 2, 3))  # (B,)
+            gt_event_rate = gt_events.abs().sum(dim=(1, 2, 3))  # (B,)
+            imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)  # (B,)
+
+            rate_error = torch.nn.functional.mse_loss(pred_event_rate, gt_event_rate)
+            total_rate_error += rate_error.item()
+
+            # Depth-motion consistency (if model predicts depth)
+            if pred_depth is not None:
+                depth_motion_error = torch.nn.functional.mse_loss(pred_depth.squeeze(1), imu_motion)
+                total_depth_motion_error += depth_motion_error.item()
+
             total_samples += images.shape[0]
 
     elapsed = time.time() - start_time
     samples_per_sec = total_samples / elapsed if elapsed > 0 else 0
 
+    # Primary metrics
     avg_event_mse = total_event_loss / (total_samples * gt_events[0].numel())
     event_bpb = avg_event_mse / np.log(2)
+    avg_rate_error = total_rate_error / total_samples
+
+    # Secondary metrics (3D-awareness)
+    avg_depth_motion_error = (
+        total_depth_motion_error / total_samples if pred_depth is not None else 0.0
+    )
 
     return {
         "event_bpb": float(event_bpb),
         "event_mse": float(avg_event_mse),
+        "event_rate_error": float(avg_rate_error),
+        "depth_motion_error": float(avg_depth_motion_error),
         "samples_per_sec": float(samples_per_sec),
     }
 

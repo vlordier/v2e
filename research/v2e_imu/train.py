@@ -192,34 +192,74 @@ class AdaINFusion(nn.Module):  # type: ignore[misc]
         return tuple(modulated)
 
 
-class EventPredictionHead(nn.Module):  # type: ignore[misc]
-    """Predict events from features."""
+class DepthEstimationHead(nn.Module):  # type: ignore[misc]
+    """Lightweight depth estimation from RGB+IMU features."""
 
-    def __init__(self, in_channels: int, out_size: tuple[int, int]) -> None:
+    def __init__(self, in_channels: int, hidden_dim: int = 64) -> None:
+        super().__init__()
+        # Global average pooling + MLP for scene-level depth
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.depth_mlp = nn.Sequential(
+            nn.Linear(in_channels, hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(inplace=True),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid(),  # Normalized depth [0, 1]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, H, W)
+        B = x.shape[0]
+        # Global features
+        global_feat = self.global_pool(x).view(B, -1)
+        # Predict scene-level depth
+        depth = self.depth_mlp(global_feat)
+        return depth
+
+
+class EventPredictionHead(nn.Module):  # type: ignore[misc]
+    """Predict events from features with depth conditioning."""
+
+    def __init__(self, in_channels: int, out_size: tuple[int, int], depth_dim: int = 16) -> None:
         super().__init__()
         self.out_size = out_size
+        # Fuse features with depth
+        self.depth_fusion = nn.Sequential(
+            nn.Conv2d(in_channels + 1, in_channels, 3, padding=1),
+            nn.GroupNorm(8, in_channels),
+            nn.SiLU(inplace=True),
+        )
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(in_channels, 64, 4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
+            nn.GroupNorm(8, 64),
             nn.SiLU(inplace=True),
             nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
-            nn.BatchNorm2d(32),
+            nn.GroupNorm(8, 32),
             nn.SiLU(inplace=True),
             nn.ConvTranspose2d(32, 16, 4, stride=2, padding=1),
-            nn.BatchNorm2d(16),
+            nn.GroupNorm(8, 16),
             nn.SiLU(inplace=True),
             nn.Conv2d(16, 2, 3, padding=1),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        events = self.decoder(x)
+    def forward(self, x: torch.Tensor, depth: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, H, W), depth: (B, 1)
+        B, C, H, W = x.shape
+        # Expand depth to match spatial dimensions
+        depth_map = depth.view(B, 1, 1, 1).expand(-1, -1, H, W)
+        # Fuse
+        x_fused = torch.cat([x, depth_map], dim=1)
+        x_fused = self.depth_fusion(x_fused)
+        # Decode
+        events = self.decoder(x_fused)
         if events.shape[2:] != self.out_size:
             events = F.interpolate(events, size=self.out_size, mode="bilinear", align_corners=False)
         return events
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
-    """Main model: RGB + IMU -> Events with Multi-scale FiLM."""
+    """3D-aware model: RGB + IMU -> Events + Depth (multi-task learning)."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -249,10 +289,14 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
             nn.GroupNorm(8, base),
             nn.SiLU(inplace=True),
         )
-        self.final = nn.Conv2d(base, 2, 3, padding=1)
+        # 3D-aware heads
+        self.depth_head = DepthEstimationHead(in_channels=base, hidden_dim=64)
+        self.event_head = EventPredictionHead(in_channels=base, out_size=config.image_size)
         self.out_size = config.image_size
 
-    def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, image: torch.Tensor, imu_seq: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         imu_features = self.imu_encoder(imu_seq)
         x1, x2, x3 = self.rgb_encoder(image)
         # Apply multi-scale FiLM
@@ -268,11 +312,12 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
             d2 = F.interpolate(d2, size=x1_mod.shape[2:], mode="bilinear", align_corners=False)
         d2 = torch.cat([d2, x1_mod], dim=1)
         d3 = self.up3(d2)
-        events = self.final(d3)
 
-        if events.shape[2:] != self.out_size:
-            events = F.interpolate(events, size=self.out_size, mode="bilinear", align_corners=False)
-        return events
+        # 3D-aware prediction: depth first, then depth-conditioned events
+        depth = self.depth_head(d3)
+        events = self.event_head(d3, depth)
+
+        return events, depth
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +450,7 @@ def training_step(
     batch: dict[str, torch.Tensor],
     device: str,
 ) -> float:
-    """Perform one training step and return loss."""
+    """Perform one training step with multi-task learning (events + depth)."""
     images = batch["image"].to(device)
     imu_seq = batch["imu_seq"].to(device)
     gt_events = batch["events"].to(device)
@@ -415,8 +460,20 @@ def training_step(
         images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
 
     optimizer.zero_grad()
-    pred_events = model(images, imu_seq)
-    loss = F.mse_loss(pred_events, gt_events)
+    pred_events, pred_depth = model(images, imu_seq)
+
+    # Multi-task loss: events + depth regularization
+    event_loss = F.mse_loss(pred_events, gt_events)
+
+    # Depth regularization: encourage depth to correlate with motion magnitude
+    # (faster motion = closer objects typically)
+    imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)  # (B,)
+    depth_motion_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach())
+
+    # Combined loss with weighting
+    depth_weight = 0.1  # Auxiliary task weight
+    loss = event_loss + depth_weight * depth_motion_loss
+
     loss.backward()
     optimizer.step()
     return float(loss.item())
@@ -443,11 +500,11 @@ def run_training_loop(
     train_loader: DataLoader,
     device: str,
 ) -> tuple[float, int]:
-    """Run the training loop and return total time and step count."""
+    """Run the training loop with multi-task learning."""
     total_training_time = 0.0
     step = 0
     smooth_train_loss = 0.0
-    grad_accum_steps = 2  # Experiment: gradient accumulation
+    grad_accum_steps = 2  # Gradient accumulation
 
     model.train()
     train_iter = iter(train_loader)
@@ -471,9 +528,16 @@ def run_training_loop(
             if model.training:
                 images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
 
-            pred_events = model(images, imu_seq)
-            # Use MSE loss for stability
-            loss = F.mse_loss(pred_events, gt_events) / grad_accum_steps
+            pred_events, pred_depth = model(images, imu_seq)
+
+            # Multi-task loss
+            event_loss = F.mse_loss(pred_events, gt_events) / grad_accum_steps
+
+            # Depth-motion consistency (auxiliary)
+            imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
+            depth_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach()) / grad_accum_steps
+
+            loss = event_loss + 0.1 * depth_loss
             loss.backward()
             accumulated_loss += loss.item()
 
@@ -515,10 +579,15 @@ def print_results(
     num_params: int,
     peak_vram_mb: float,
 ) -> None:
-    """Print final results in standard format."""
+    """Print final results with 3D-aware metrics."""
     print("---")
+    # Primary metrics
     print(f"event_bpb: {eval_metrics['event_bpb']:.6f}")
     print(f"event_mse: {eval_metrics['event_mse']:.6f}")
+    # 3D-awareness metrics
+    print(f"event_rate_error: {eval_metrics['event_rate_error']:.6f}")
+    print(f"depth_motion_error: {eval_metrics['depth_motion_error']:.6f}")
+    # Training stats
     print(f"training_seconds: {total_training_time:.1f}")
     print(f"total_seconds: {total_time:.1f}")
     print(f"peak_vram_mb: {peak_vram_mb:.1f}")
