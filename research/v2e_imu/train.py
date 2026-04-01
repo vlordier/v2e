@@ -570,6 +570,12 @@ def run_training_loop(
                 pred_counts = pred_rate * 100.0
                 poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
                 event_loss = poisson_nll.mean() / grad_accum_steps
+                
+                # Event rate regularization (prevents model from predicting λ≈0 everywhere)
+                # Encourage realistic event rate (~10% of pixels should be active)
+                pred_event_rate = (pred_rate > 0.3).float().mean()
+                target_event_rate = torch.tensor(0.1, device=pred_rate.device)  # Expect ~10% active pixels
+                rate_regularization = ((pred_event_rate - target_event_rate) ** 2) / grad_accum_steps
 
                 # Depth-motion consistency (auxiliary) with adaptive weighting
                 imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
@@ -577,7 +583,7 @@ def run_training_loop(
 
                 # Uncertainty weighting (learnable depth weight)
                 depth_weight = torch.exp(-model.log_var_depth)
-                loss = event_loss + depth_weight * depth_loss + model.log_var_depth
+                loss = event_loss + depth_weight * depth_loss + model.log_var_depth + 0.01 * rate_regularization
 
             # Backward pass with gradient scaling (mixed precision)
             if scaler:
