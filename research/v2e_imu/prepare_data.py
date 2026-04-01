@@ -224,36 +224,52 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         return np.array(imu_seq, dtype=np.float32)
 
     def _get_event_map(self, timestamp: float) -> np.ndarray:
-        """Get event map around a given timestamp using binary search."""
+        """Get event map around a given timestamp using multi-scale windows."""
         H, W = self.image_size
-        dt = self.event_window_ms / 1000.0
+        
+        # Multi-scale temporal windows (captures fast + slow events)
+        windows_ms = [10, 33, 100]  # 10ms, 33ms, 100ms
+        
+        all_pos_maps = []
+        all_neg_maps = []
+        
+        for dt_ms in windows_ms:
+            dt = dt_ms / 1000.0
+            
+            pos_events = np.zeros((H, W), dtype=np.float32)
+            neg_events = np.zeros((H, W), dtype=np.float32)
 
-        pos_events = np.zeros((H, W), dtype=np.float32)
-        neg_events = np.zeros((H, W), dtype=np.float32)
+            if len(self.event_timestamps) == 0:
+                all_pos_maps.append(pos_events)
+                all_neg_maps.append(neg_events)
+                continue
 
-        if len(self.event_timestamps) == 0:
-            return np.stack([pos_events, neg_events], axis=0)
+            start_time = timestamp - dt / 2
+            end_time = timestamp + dt / 2
 
-        start_time = timestamp - dt / 2
-        end_time = timestamp + dt / 2
+            start_idx = np.searchsorted(self.event_timestamps, start_time, side="left")
+            end_idx = np.searchsorted(self.event_timestamps, end_time, side="right")
 
-        start_idx = np.searchsorted(self.event_timestamps, start_time, side="left")
-        end_idx = np.searchsorted(self.event_timestamps, end_time, side="right")
+            for i in range(start_idx, end_idx):
+                x = self.event_x[i]
+                y = self.event_y[i]
+                if 0 <= x < W and 0 <= y < H:
+                    if self.event_polarity[i] == 1:
+                        pos_events[y, x] += 1
+                    else:
+                        neg_events[y, x] += 1
 
-        for i in range(start_idx, end_idx):
-            x = self.event_x[i]
-            y = self.event_y[i]
-            if 0 <= x < W and 0 <= y < H:
-                if self.event_polarity[i] == 1:
-                    pos_events[y, x] += 1
-                else:
-                    neg_events[y, x] += 1
-
-        # CRITICAL FIX: Normalize event counts to [0, 1] range
-        # Without this, model trained on binary events (mini-FPV) fails on count data (full dataset)
-        max_events = 100.0  # Reasonable maximum for 33ms window (99th percentile)
-        pos_events = np.clip(pos_events / max_events, 0.0, 1.0)
-        neg_events = np.clip(neg_events / max_events, 0.0, 1.0)
+            # Normalize for this window size
+            max_events = 100.0 * (dt_ms / 33.0)  # Scale max with window size
+            pos_events = np.clip(pos_events / max_events, 0.0, 1.0)
+            neg_events = np.clip(neg_events / max_events, 0.0, 1.0)
+            
+            all_pos_maps.append(pos_events)
+            all_neg_maps.append(neg_events)
+        
+        # Average across scales (simple fusion)
+        pos_events = np.mean(np.stack(all_pos_maps), axis=0)
+        neg_events = np.mean(np.stack(all_neg_maps), axis=0)
 
         return np.stack([pos_events, neg_events], axis=0)
 

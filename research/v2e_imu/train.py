@@ -544,6 +544,10 @@ def run_training_loop(
 
             if model.training:
                 images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
+                
+                # Event dropout augmentation (prevents overfitting)
+                dropout_mask = torch.rand_like(gt_events) > 0.15  # 15% dropout
+                gt_events = gt_events * dropout_mask
 
             pred_events, pred_depth = model(images, imu_seq)
 
@@ -558,6 +562,9 @@ def run_training_loop(
             loss.backward()
             accumulated_loss += loss.item()
 
+        # Gradient clipping (prevents explosion, stabilizes training)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
         loss_val = accumulated_loss
 
@@ -570,8 +577,17 @@ def run_training_loop(
 
         progress = min(total_training_time / TIME_BUDGET, 1.0)
         lrm = get_lr_multiplier(progress)
+        
+        # LR warm-up for first 10% of training (stabilizes early training)
+        warmup_steps = 35  # ~10% of ~350 total steps
+        if step < warmup_steps:
+            warmup_lr = LEARNING_RATE * (step / warmup_steps)
+            lr = warmup_lr
+        else:
+            lr = LEARNING_RATE * lrm
+        
         for param_group in optimizer.param_groups:
-            param_group["lr"] = LEARNING_RATE * lrm
+            param_group["lr"] = lr
 
         remaining = max(0.0, TIME_BUDGET - total_training_time)
         print_progress(step, progress, debiased_smooth_loss, lrm, dt, remaining)
