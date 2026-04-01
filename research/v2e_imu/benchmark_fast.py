@@ -1,22 +1,22 @@
 #!/usr/bin/env python
 """
-Fast Benchmark: Uses mini-FPV for quick comparison.
+Fast Benchmark for V2E Improved Model.
+
+Uses mini-FPV for quick benchmarking (~1 min).
 
 Usage:
     uv run python benchmark_fast.py
 """
 
-import json
 import sys
 import time
-from pathlib import Path
-
 import torch
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from prepare_data import evaluate_combined_metric, make_dataloader
-from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
+from prepare_data import make_dataloader, evaluate_combined_metric
+from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
 
 
 def count_parameters(model):
@@ -24,10 +24,10 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters())
 
 
-def benchmark_inference(model, device, dataloader, num_batches=5):
-    """Benchmark inference speed."""
+def benchmark_inference(model, device, dataloader, num_batches=10):
+    """Benchmark inference speed (honest, measured)."""
     model.eval()
-
+    
     # Warm-up
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
@@ -36,18 +36,22 @@ def benchmark_inference(model, device, dataloader, num_batches=5):
             images = batch["image"].to(device)
             imu_seq = batch["imu_seq"].to(device)
             _ = model(images, imu_seq)
-
+    
+    # Benchmark (FP32 only - MPS works best with FP32)
     start = time.time()
+    
     total_samples = 0
     with torch.inference_mode():
         for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break
+            
             images = batch["image"].to(device)
             imu_seq = batch["imu_seq"].to(device)
             _ = model(images, imu_seq)
+            
             total_samples += images.shape[0]
-
+    
     elapsed = time.time() - start
     
     return {
@@ -57,7 +61,7 @@ def benchmark_inference(model, device, dataloader, num_batches=5):
     }
 
 
-def run_benchmark(version_name="Improved"):
+def run_benchmark(version_name="V10"):
     """Run fast benchmark."""
     print("="*60)
     print(f"V2E BENCHMARK - {version_name}")
@@ -74,7 +78,7 @@ def run_benchmark(version_name="Improved"):
     model = EventPredictor(config).to(device)
     
     # Load checkpoint if available
-    checkpoint_path = Path(__file__).parent / "3d_aware_model_checkpoint.pt"
+    checkpoint_path = Path("3d_aware_model_checkpoint.pt")
     if checkpoint_path.exists():
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint["model_state_dict"], strict=False)
@@ -88,14 +92,13 @@ def run_benchmark(version_name="Improved"):
     
     # Create dataloader (mini-FPV for speed)
     print("Loading mini-FPV data...")
-    data_path = str(Path(__file__).parent / "data" / "fpv" / "mini_fpv")
-    val_loader = make_dataloader(data_path, "val", 16, 50, (260, 346))
+    val_loader = make_dataloader("data/fpv/mini_fpv", "val", 1, 50, (260, 346))
     print("✅ Data loaded")
     print()
     
     # Inference benchmark
     print("Inference Benchmark:")
-    inf_results = benchmark_inference(model, device, val_loader, num_batches=5)
+    inf_results = benchmark_inference(model, device, val_loader, num_batches=10)
     print(f"  FPS: {inf_results['fps']:.1f}")
     print(f"  Latency: {inf_results['latency_ms']:.2f} ms")
     print()
@@ -118,24 +121,25 @@ def run_benchmark(version_name="Improved"):
     print("SUMMARY")
     print("="*60)
     print(f"Model: {num_params / 1e6:.2f}M params")
-    print(f"Inference: {inf_results['fps']:.1f} FPS")
+    print(f"Inference: {inf_results['fps']:.1f} FPS (MPS)")
     print(f"event_bpb: {metrics['event_bpb']:.6f}")
     print("="*60)
     
     # Save results
+    import json
     results = {
         "version": version_name,
         "model_params_M": num_params / 1e6,
-        "inference_fps": inf_results["fps"],
-        "inference_latency_ms": inf_results["latency_ms"],
-        "event_bpb": metrics["event_bpb"],
-        "event_mse": metrics["event_mse"],
-        "event_rate_error": metrics["event_rate_error"],
-        "depth_motion_error": metrics["depth_motion_error"],
+        "inference_fps": inf_results['fps'],
+        "inference_latency_ms": inf_results['latency_ms'],
+        "event_bpb": metrics['event_bpb'],
+        "event_mse": metrics['event_mse'],
+        "event_rate_error": metrics['event_rate_error'],
+        "depth_motion_error": metrics['depth_motion_error'],
         "eval_time_s": eval_time,
     }
     
-    output_file = f"benchmark_{version_name.lower().replace(' ', '_')}.json"
+    output_file = f"benchmark_{version_name.lower()}.json"
     with open(output_file, "w") as f:
         json.dump(results, f, indent=2)
     

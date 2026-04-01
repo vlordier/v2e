@@ -546,7 +546,7 @@ def run_training_loop(
                 event_loss
                 + depth_weight * depth_loss
                 + model.log_var_depth / grad_accum_steps
-                + 0.01 * rate_regularization
+                + 0.05 * rate_regularization
                 + 0.1 * flow_loss
                 + 0.05 * dino_loss
             )
