@@ -255,6 +255,11 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
         log_rate = self.decoder(x_fused)  # Predict log(λ) for Poisson
         # Rate must be positive: λ = exp(log_rate)
         rate = torch.exp(log_rate)
+        
+        # Interpolate to match output size
+        if rate.shape[2:] != self.out_size:
+            rate = F.interpolate(rate, size=self.out_size, mode='bilinear', align_corners=False)
+        
         return rate
 
 
