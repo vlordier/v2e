@@ -23,11 +23,11 @@ def count_parameters(model):
 
 
 def benchmark_inference(model, device, dataloader, num_batches=5):
-    """Benchmark inference speed."""
+    """Benchmark inference speed with optimizations."""
     model.eval()
     
     # Warm-up
-    with torch.no_grad():
+    with torch.inference_mode():
         for i, batch in enumerate(dataloader):
             if i >= 2:
                 break
@@ -35,11 +35,11 @@ def benchmark_inference(model, device, dataloader, num_batches=5):
             imu_seq = batch["imu_seq"].to(device)
             _ = model(images, imu_seq)
     
-    # Benchmark
+    # Benchmark with inference mode (faster than no_grad)
     start = time.time()
     
     total_samples = 0
-    with torch.no_grad():
+    with torch.inference_mode():
         for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break

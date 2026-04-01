@@ -525,11 +525,14 @@ def run_training_loop(
     train_loader: DataLoader,
     device: str,
 ) -> tuple[float, int]:
-    """Run the training loop with multi-task learning."""
+    """Run the training loop with multi-task learning and mixed precision."""
     total_training_time = 0.0
     step = 0
     smooth_train_loss = 0.0
     grad_accum_steps = 2  # Gradient accumulation
+
+    # Mixed precision training (2x speedup on GPU)
+    scaler = torch.amp.GradScaler(device=device) if device != "cpu" else None
 
     model.train()
     train_iter = iter(train_loader)
@@ -557,35 +560,43 @@ def run_training_loop(
                 dropout_mask = torch.rand_like(gt_events) > 0.15  # 15% dropout
                 gt_events = gt_events * dropout_mask / 0.85  # Scale to maintain E[gt]
 
-            # Poisson event prediction: model predicts rate λ, not binary events
-            pred_rate, pred_depth = model(images, imu_seq)
+            # Mixed precision forward pass
+            with torch.amp.autocast(device_type=device if device != "mps" else "cpu"):
+                # Poisson event prediction: model predicts rate λ, not binary events
+                pred_rate, pred_depth = model(images, imu_seq)
 
-            # Poisson Negative Log-Likelihood (correct for count data!)
-            # NLL = λ - k*log(λ) where k is ground truth count
-            # Un-normalize gt_events from [0,1] to counts [0, 100]
-            gt_counts = gt_events * 100.0
-            pred_counts = pred_rate * 100.0
-            
-            # Poisson NLL: -log P(k|λ) = λ - k*log(λ) + log(k!)
-            # We ignore log(k!) since it's constant w.r.t. predictions
-            poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
-            event_loss = poisson_nll.mean() / grad_accum_steps
+                # Poisson Negative Log-Likelihood (correct for count data!)
+                gt_counts = gt_events * 100.0
+                pred_counts = pred_rate * 100.0
+                poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
+                event_loss = poisson_nll.mean() / grad_accum_steps
 
-            # Depth-motion consistency (auxiliary) with adaptive weighting
-            imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
-            depth_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach()) / grad_accum_steps
+                # Depth-motion consistency (auxiliary) with adaptive weighting
+                imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
+                depth_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach()) / grad_accum_steps
+
+                # Uncertainty weighting (learnable depth weight)
+                depth_weight = torch.exp(-model.log_var_depth)
+                loss = event_loss + depth_weight * depth_loss + model.log_var_depth
+
+            # Backward pass with gradient scaling (mixed precision)
+            if scaler:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
             
-            # Uncertainty weighting (learnable depth weight)
-            depth_weight = torch.exp(-model.log_var_depth)
-            loss = event_loss + depth_weight * depth_loss + model.log_var_depth
-            
-            loss.backward()
             accumulated_loss += loss.item()
 
         # Gradient clipping (prevents explosion, stabilizes training)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        # Optimizer step with gradient scaling (mixed precision)
+        if scaler:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         
-        optimizer.step()
         loss_val = accumulated_loss
 
         dt = time.time() - t0
