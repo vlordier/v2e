@@ -66,13 +66,15 @@ class FNOEventPredictor(nn.Module):
     
     Architecture:
     1. CNN encoder (local features)
-    2. FNO layers (global mixing)
-    3. CNN decoder (event prediction)
+    2. IMU encoder + fusion
+    3. FNO layers (global mixing)
+    4. CNN decoder (event prediction)
     """
     
-    def __init__(self, modes: int = 16, fno_layers: int = 2) -> None:
+    def __init__(self, modes: int = 16, fno_layers: int = 2, imu_hidden_dim: int = 128) -> None:
         super().__init__()
         self.modes = modes
+        self.imu_hidden_dim = imu_hidden_dim
         
         # Encoder (local features)
         self.encoder = nn.Sequential(
@@ -83,6 +85,10 @@ class FNOEventPredictor(nn.Module):
             nn.GroupNorm(16, 128),
             nn.SiLU(inplace=True),
         )
+        
+        # IMU encoder (temporal features)
+        self.imu_encoder = nn.LSTM(6, imu_hidden_dim, batch_first=True)
+        self.imu_fusion = nn.Linear(imu_hidden_dim, 128)
         
         # FNO layers (global mixing)
         self.fno_layers = nn.ModuleList([
@@ -98,44 +104,56 @@ class FNOEventPredictor(nn.Module):
             nn.Conv2d(64, 2, 3, padding=1),
         )
         
-    def forward(self, rgb: torch.Tensor, imu_seq: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, rgb: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
         """
         Args:
             rgb: (B, 1, H, W) grayscale images
-            imu_seq: (B, T, 6) IMU sequences (optional, not used in FNO yet)
+            imu_seq: (B, T, 6) IMU sequences (accelerometer + gyroscope)
         Returns:
-            events: (B, 2, H, W) event rate prediction
+            events: (B, 2, H, W) event rate prediction (positive, for Poisson)
         """
-        # Encode
-        x = self.encoder(rgb)
+        B, _, H, W = rgb.shape
         
-        # FNO global mixing
+        # Encode RGB (local features)
+        x = self.encoder(rgb)  # (B, 128, H/2, W/2)
+        
+        # Encode IMU (temporal features)
+        _, (imu_hidden, _) = self.imu_encoder(imu_seq)  # imu_hidden: (1, B, 128)
+        imu_features = self.imu_fusion(imu_hidden[0])  # (B, 128)
+        
+        # Fuse IMU with RGB features (broadcast IMU to spatial dimensions)
+        imu_map = imu_features.view(B, -1, 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+        x = x + imu_map  # Additive fusion (IMU modulates RGB features)
+        
+        # FNO global mixing (with residual connections)
         for fno_layer in self.fno_layers:
-            x = x + fno_layer(x)  # Residual connection
+            x = x + fno_layer(x)
         
-        # Decode
+        # Decode to event rate
         events = self.decoder(x)
         
-        # Ensure positive rate (for Poisson)
+        # Ensure positive rate (for Poisson likelihood)
         events = torch.exp(events)
         
         return events
 
 
 def test_fno() -> None:
-    """Test FNO event predictor."""
+    """Test FNO event predictor with IMU fusion."""
     B, H, W = 2, 260, 346
+    T = 50
     
-    model = FNOEventPredictor(modes=16, fno_layers=2)
+    model = FNOEventPredictor(modes=16, fno_layers=2, imu_hidden_dim=128)
     rgb = torch.randn(B, 1, H, W)
-    imu = torch.randn(B, 50, 6)
+    imu = torch.randn(B, T, 6)
     
     events = model(rgb, imu)
     
-    print(f"Input: {rgb.shape}")
+    print(f"RGB Input: {rgb.shape}")
+    print(f"IMU Input: {imu.shape}")
     print(f"Output: {events.shape}")
-    print(f"Output range: [{events.min():.4f}, {events.max():.4f}]")
-    print(f"✅ FNO test passed!")
+    print(f"Output range: [{events.min():.4f}, {events.max():.4f}] (should be positive for Poisson)")
+    print(f"✅ FNO with IMU fusion test passed!")
 
 
 if __name__ == "__main__":
