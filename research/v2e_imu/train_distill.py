@@ -2,7 +2,7 @@
 """
 Knowledge Distillation: Compress 3D-Aware Teacher → Compact Student.
 
-Teacher: 3D-aware RGB+IMU+Depth model (1.19M params, 0.000141 event_bpb)
+Teacher: Multimodal spatiotemporal RGB+IMU+Depth model (1.19M params, 0.000141 event_bpb)
 Student: Compact RGB+IMU model (~0.3M params, target 0.000155 event_bpb)
 
 Usage:

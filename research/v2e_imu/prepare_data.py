@@ -351,7 +351,7 @@ def evaluate_combined_metric(
     device: str,
     num_samples: int = EVAL_SAMPLES,
 ) -> dict[str, float]:
-    """Evaluate model with improved 3D-aware metrics.
+    """Evaluate model with improved Multimodal spatiotemporal metrics.
 
     Metrics:
     - event_bpb: Bits per byte for event prediction (lower is better)
@@ -411,7 +411,7 @@ def evaluate_combined_metric(
     event_bpb = avg_event_mse / np.log(2)
     avg_rate_error = total_rate_error / total_samples
 
-    # Secondary metrics (3D-awareness)
+    # Secondary metrics (Multimodal spatiotemporalness)
     avg_depth_motion_error = (
         total_depth_motion_error / total_samples if pred_depth is not None else 0.0
     )

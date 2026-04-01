@@ -259,7 +259,7 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
-    """3D-aware model: RGB + IMU -> Events + Depth (multi-task learning)."""
+    """Multimodal spatiotemporal model: RGB + IMU -> Events + Depth (multi-task learning)."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -289,7 +289,7 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
             nn.GroupNorm(8, base),
             nn.SiLU(inplace=True),
         )
-        # 3D-aware heads
+        # Multimodal spatiotemporal heads
         self.depth_head = DepthEstimationHead(in_channels=base, hidden_dim=64)
         self.event_head = EventPredictionHead(in_channels=base, out_size=config.image_size)
         self.out_size = config.image_size
@@ -313,7 +313,7 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         d2 = torch.cat([d2, x1_mod], dim=1)
         d3 = self.up3(d2)
 
-        # 3D-aware prediction: depth first, then depth-conditioned events
+        # Multimodal spatiotemporal prediction: depth first, then depth-conditioned events
         depth = self.depth_head(d3)
         events = self.event_head(d3, depth)
 
@@ -329,7 +329,7 @@ BASE_CHANNELS = 32  # Reduced for faster iteration with synthetic data
 IMU_HIDDEN_DIM = 128  # Reduced for faster iteration
 
 # Knowledge distillation (optional)
-USE_DISTILLATION = False  # Set to True to distill from 3D-aware teacher
+USE_DISTILLATION = False  # Set to True to distill from Multimodal spatiotemporal teacher
 DISTILLATION_WEIGHT = 0.5  # Balance between task loss and distillation loss
 
 # Training
@@ -596,12 +596,12 @@ def print_results(
     num_params: int,
     peak_vram_mb: float,
 ) -> None:
-    """Print final results with 3D-aware metrics."""
+    """Print final results with Multimodal spatiotemporal metrics."""
     print("---")
     # Primary metrics
     print(f"event_bpb: {eval_metrics['event_bpb']:.6f}")
     print(f"event_mse: {eval_metrics['event_mse']:.6f}")
-    # 3D-awareness metrics
+    # Multimodal spatiotemporalness metrics
     print(f"event_rate_error: {eval_metrics['event_rate_error']:.6f}")
     print(f"depth_motion_error: {eval_metrics['depth_motion_error']:.6f}")
     # Training stats
