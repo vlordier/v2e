@@ -49,12 +49,12 @@
 **Test:** Train on mini-FPV with same architecture → compare results
 
 ### **Hypothesis 2: Model Architecture Issue** ❓
-**Question:** Does 3D-aware architecture hurt event prediction?
+**Question:** Does Multimodal Spatiotemporal architecture hurt event prediction?
 
 **Evidence:**
-- V1 (3D-aware, mini): 0.000142 ✅
+- V1 (Multimodal Spatiotemporal, mini): 0.000142 ✅
 - Naive baseline: 0.000190
-- V5 (3D-aware, full): 0.008579 ❌
+- V5 (Multimodal Spatiotemporal, full): 0.008579 ❌
 
 **Test:** Train naive model (no depth head) on full dataset
 
@@ -138,7 +138,7 @@ V2-V5 (full, 30.6M): event_bpb=0.008-0.009 ❌
 ## 🏆 **KEY LEARNINGS**
 
 ### ✅ **What We Know Works**
-1. **3D-aware architecture** - Works on mini-FPV (V1: 0.000142)
+1. **Multimodal Spatiotemporal architecture** - Works on mini-FPV (V1: 0.000142)
 2. **Depth-motion learning** - Stable across all versions (~4.93)
 3. **Checkpoint saving** - Working perfectly
 4. **Full dataset pipeline** - No technical issues

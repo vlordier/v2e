@@ -121,7 +121,7 @@ Events not properly correlated with IMU motion.
 
 ## 🏆 Key Achievements
 
-1. ✅ **First 3D-aware event prediction model trained**
+1. ✅ **First Multimodal Spatiotemporal event prediction model trained**
 2. ✅ **25% better compression than naive baseline**
 3. ✅ **All metrics infrastructure working**
 4. ✅ **Training pipeline stable and reproducible**
@@ -142,10 +142,10 @@ Events not properly correlated with IMU motion.
 
 ## 🎓 Conclusion
 
-**The 3D-aware model successfully trained and achieved 25% better event compression than the naive RGB-only baseline!**
+**The Multimodal Spatiotemporal model successfully trained and achieved 25% better event compression than the naive RGB-only baseline!**
 
 While there's room for improvement (hallucination, precision, motion correlation), the core approach is validated:
-- ✅ 3D awareness helps event prediction
+- ✅ Multimodal Spatiotemporalness helps event prediction
 - ✅ Depth-motion consistency is learnable
 - ✅ Multi-task training works
 

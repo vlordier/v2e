@@ -139,7 +139,7 @@ IMU Seq ───┘          │               │           └→ (depth-cond
 
 ## Conclusion
 
-**The 3D-aware RGB+IMU model achieves 25.8% better event compression than the naive RGB-only baseline, at the cost of 3x more parameters.**
+**The Multimodal Spatiotemporal RGB+IMU model achieves 25.8% better event compression than the naive RGB-only baseline, at the cost of 3x more parameters.**
 
 This trade-off is justified when:
 - Physical interpretability matters

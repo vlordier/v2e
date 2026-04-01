@@ -105,7 +105,7 @@ uv run python apply_pruning.py --prune-ratio 0.5
 ## 🎯 Recommendations
 
 ### For Research (Max Accuracy)
-Use full 3D-aware model:
+Use full Multimodal Spatiotemporal model:
 ```bash
 uv run python train.py
 ```

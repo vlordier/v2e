@@ -40,7 +40,7 @@ loss = event_loss + rate_weight * rate_penalty
 
 | Model | Params | Architecture |
 |-------|--------|--------------|
-| **Teacher** | 1.19M | 3D-aware, multi-scale FiLM, depth head |
+| **Teacher** | 1.19M | Multimodal Spatiotemporal, multi-scale FiLM, depth head |
 | **Student** | ~0.30M | Compact RGB+IMU, single-scale fusion |
 
 ### Distillation Loss
@@ -183,18 +183,18 @@ nn.Conv2d(32, 32, 3, padding=1, groups=4)
 ## 7. Recommended Pipeline
 
 ### For Research (Maximum Accuracy)
-1. Train full 3D-aware model
+1. Train full Multimodal Spatiotemporal model
 2. Apply rate regularization
 3. Fine-tune with distillation (self-distillation)
 
 ### For Deployment (Balanced)
-1. Train full 3D-aware teacher
+1. Train full Multimodal Spatiotemporal teacher
 2. Distill to compact student
 3. Apply 50% structured pruning
 4. Fine-tune pruned model
 
 ### For Edge Devices (Maximum Efficiency)
-1. Train full 3D-aware teacher
+1. Train full Multimodal Spatiotemporal teacher
 2. Distill to tiny student
 3. Apply quantization-aware training
 4. Convert to INT8

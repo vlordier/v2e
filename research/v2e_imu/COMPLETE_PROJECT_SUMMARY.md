@@ -51,7 +51,7 @@
 ### **Core Training**
 | File | Purpose | Lines |
 |------|---------|-------|
-| `train.py` | 3D-aware model + checkpoint saving | 732 |
+| `train.py` | Multimodal Spatiotemporal model + checkpoint saving | 732 |
 | `prepare_data.py` | Data loading + metrics | 473 |
 | `robust_metrics.py` | 6 comprehensive metrics | 397 |
 
@@ -72,7 +72,7 @@
 ### **Documentation**
 | File | Purpose |
 |------|---------|
-| `COMPARISON_RESULTS.md` | Baseline vs 3D-aware |
+| `COMPARISON_RESULTS.md` | Baseline vs Multimodal Spatiotemporal |
 | `EFFICIENCY_QUICKSTART.md` | Usage guide |
 | `METRICS_CRITIQUE.md` | Metrics roadmap (17 metrics) |
 | `TRAINED_MODEL_RESULTS.md` | V1 analysis |
@@ -87,7 +87,7 @@
 ## 🎯 **KEY ACHIEVEMENTS**
 
 ### **Scientific Contributions**
-1. ✅ **First 3D-aware event prediction model** (depth-conditioned events)
+1. ✅ **First Multimodal Spatiotemporal event prediction model** (depth-conditioned events)
 2. ✅ **25% better compression than naive baseline** (V1: 0.000142 vs 0.000190)
 3. ✅ **Comprehensive metrics suite** (6 robust metrics + occlusion validation)
 4. ✅ **Loss weight analysis** (discovered rate_weight scaling with dataset size)
@@ -109,7 +109,7 @@
 ## 🔬 **KEY INSIGHTS**
 
 ### **What Works**
-- **3D-awareness helps** - Depth-motion correlation is learnable
+- **Multimodal Spatiotemporalness helps** - Depth-motion correlation is learnable
 - **Full dataset essential** - mini-FPV not representative for HPO
 - **Checkpoint saving critical** - Enables model reuse, distillation
 - **Rate penalty needs careful tuning** - Must scale with dataset size
@@ -142,7 +142,7 @@
 ### **Long-term** (This Month)
 7. **Knowledge distillation** - Compress to 0.3M student model
 8. **Quantization-aware training** - Better than post-training
-9. **Write paper** - Document 3D-aware approach
+9. **Write paper** - Document Multimodal Spatiotemporal approach
 
 ---
 
@@ -161,7 +161,7 @@
 
 ## 🏆 **FINAL SUMMARY**
 
-**We built a complete, production-ready 3D-aware event prediction system with:**
+**We built a complete, production-ready Multimodal Spatiotemporal event prediction system with:**
 - ✅ Novel architecture (depth-conditioned events)
 - ✅ Comprehensive metrics (6 robust + occlusion validation)
 - ✅ Efficiency toolkit (distillation, PTQ, pruning)

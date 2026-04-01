@@ -32,17 +32,22 @@ from robust_metrics import (
 
 
 def load_trained_model(device: str) -> nn.Module:
-    """Load trained model weights."""
-    print("Loading trained model...")
+    """Load trained model weights from checkpoint."""
+    print("Loading trained model from checkpoint...")
     
     config = ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM)
     model = EventPredictor(config)
     model = model.to(device)
     
-    # Note: In production, you would load from checkpoint
-    # For now, we'll use the model as-is (it was trained in the same session)
-    print("Note: Using model from current training session")
-    print("      (checkpoint saving to be added)")
+    # Load checkpoint
+    checkpoint_path = Path("3d_aware_model_checkpoint.pt")
+    if checkpoint_path.exists():
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        print(f"✅ Loaded checkpoint from: {checkpoint_path}")
+    else:
+        print(f"⚠️  Checkpoint not found: {checkpoint_path}")
+        print("   Using untrained model for evaluation")
     
     return model
 

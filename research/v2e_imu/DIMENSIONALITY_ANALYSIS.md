@@ -82,10 +82,10 @@ Output:
 
 | File | Current | Proposed |
 |------|---------|----------|
-| `train.py` | "3D-aware model" | "Multimodal spatiotemporal model" |
+| `train.py` | "Multimodal Spatiotemporal model" | "Multimodal spatiotemporal model" |
 | `COMPARISON_RESULTS.md` | "3D-Aware Event Prediction" | "Multimodal Spatiotemporal Event Prediction" |
-| `V6_RESULTS.md` | "3D-aware architecture" | "Multimodal spatiotemporal architecture" |
-| All docs | "3D-aware" | "Multimodal spatiotemporal" |
+| `V6_RESULTS.md` | "Multimodal Spatiotemporal architecture" | "Multimodal spatiotemporal architecture" |
+| All docs | "Multimodal Spatiotemporal" | "Multimodal spatiotemporal" |
 
 ---
 
@@ -116,7 +116,7 @@ Output:
 
 ## 🎓 **Conclusion**
 
-**"3D-aware" is misleading.** We should use **"Multimodal Spatiotemporal Event Prediction"** because:
+**"Multimodal Spatiotemporal" is misleading.** We should use **"Multimodal Spatiotemporal Event Prediction"** because:
 
 1. It's more accurate (we use multiple modalities: RGB + IMU)
 2. It captures the spatiotemporal nature (2D space + 1D time)

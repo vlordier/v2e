@@ -72,7 +72,7 @@ neg_events = np.clip(neg_events / max_events, 0.0, 1.0)
 1. ✅ **Normalized events** [0, 1] (CRITICAL!)
 2. ✅ **No rate_penalty** (doesn't work for large datasets)
 3. ✅ **Full dataset** (30.6M real events)
-4. ✅ **3D-aware architecture** (depth-motion correlation)
+4. ✅ **Multimodal Spatiotemporal architecture** (depth-motion correlation)
 5. ✅ **Proper training** (433 steps, good convergence)
 
 ---
