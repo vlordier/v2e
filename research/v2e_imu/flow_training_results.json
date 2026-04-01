@@ -1,0 +1,11 @@
+{
+  "training_steps": 100,
+  "training_time_s": 136.2289581298828,
+  "metrics": {
+    "event_bpb": 0.12602598245311783,
+    "event_mse": 1.1711298586605684e-06,
+    "event_rate_error": 6141.089618389423,
+    "depth_motion_error": 19.752126693725586,
+    "samples_per_sec": 6.167370463233825
+  }
+}

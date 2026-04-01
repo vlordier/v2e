@@ -13,17 +13,17 @@ Usage:
     uv run python benchmark_v2e.py
 """
 
-import os
 import sys
 import time
-import torch
 from pathlib import Path
+
+import torch
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from prepare_data import make_dataloader, evaluate_combined_metric
-from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
+from prepare_data import evaluate_combined_metric, make_dataloader
+from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
 def get_memory_usage():
@@ -239,11 +239,11 @@ def run_benchmark():
     # Save results
     results = {
         "model_params_M": num_params / 1e6,
-        "inference_fps": inf_results['fps'],
-        "inference_latency_ms": inf_results['latency_ms'],
-        "training_steps_per_sec": train_results['steps_per_sec'],
-        "event_bpb": metrics['event_bpb'],
-        "event_mse": metrics['event_mse'],
+        "inference_fps": inf_results["fps"],
+        "inference_latency_ms": inf_results["latency_ms"],
+        "training_steps_per_sec": train_results["steps_per_sec"],
+        "event_bpb": metrics["event_bpb"],
+        "event_mse": metrics["event_mse"],
         "memory_mb": get_memory_usage(),
     }
     
@@ -251,7 +251,7 @@ def run_benchmark():
     with open("benchmark_results.json", "w") as f:
         json.dump(results, f, indent=2)
     
-    print(f"\n✅ Results saved to benchmark_results.json")
+    print("\n✅ Results saved to benchmark_results.json")
     
     return results
 

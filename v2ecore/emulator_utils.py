@@ -15,7 +15,6 @@ All functions operate on torch Tensors for GPU acceleration.
 
 import logging
 import math
-from typing import Optional
 
 import numpy as np
 import torch
@@ -59,7 +58,7 @@ def lin_log(x: torch.Tensor, threshold: float = 20) -> torch.Tensor:
         Logarithmically-mapped values (same shape as x, float32).
     """
     # Fast path: LUT for uint8-range inputs on CPU (MPS indexing overhead too high)
-    if x.max() <= 255 and x.min() >= 0 and x.device.type == 'cpu':
+    if x.max() <= 255 and x.min() >= 0 and x.device.type == "cpu":
         lut = _build_lin_log_lut(threshold, x.device)
         indices = x.long().clamp(0, 255)
         return lut[indices]
@@ -81,7 +80,6 @@ def rescale_intensity_frame(new_frame):
     limit max time constant to ~1/10 of white intensity level
     """
     return (new_frame + 20) / 275.0
-
 
 
 def subtract_leak_current(
@@ -108,9 +106,7 @@ def subtract_leak_current(
     Returns:
         Updated base_log_frame with leak current subtracted.
     """
-    rand = torch.randn(
-        noise_rate_array.shape, dtype=torch.float32, device=noise_rate_array.device
-    )
+    rand = torch.randn(noise_rate_array.shape, dtype=torch.float32, device=noise_rate_array.device)
     curr_leak_rate = leak_rate_hz * noise_rate_array * (1 - leak_jitter_fraction * rand)
     delta_leak = delta_time * curr_leak_rate * pos_thres
     return base_log_frame - delta_leak
@@ -169,7 +165,7 @@ low_pass_filter._warning_count = 0
 def low_pass_filter_inplace(
     log_new_frame: torch.Tensor,
     lp_log_frame: torch.Tensor,
-    inten01: Optional[torch.Tensor],
+    inten01: torch.Tensor | None,
     delta_time: float,
     cutoff_hz: float,
 ) -> torch.Tensor:
@@ -209,7 +205,7 @@ def fused_photoreceptor_step(
     log_new_frame: torch.Tensor,
     lp_log_frame: torch.Tensor,
     base_log_frame: torch.Tensor,
-    inten01: Optional[torch.Tensor],
+    inten01: torch.Tensor | None,
     pos_thres: torch.Tensor,
     neg_thres: torch.Tensor,
     delta_time: float,
@@ -272,12 +268,8 @@ def compute_event_map(diff_frame, pos_thres, neg_thres):
     neg_frame = F.relu(-diff_frame)
 
     # compute quantized number of ON and OFF events for each pixel
-    pos_evts_frame = torch.div(pos_frame, pos_thres, rounding_mode="floor").type(
-        torch.int32
-    )
-    neg_evts_frame = torch.div(neg_frame, neg_thres, rounding_mode="floor").type(
-        torch.int32
-    )
+    pos_evts_frame = torch.div(pos_frame, pos_thres, rounding_mode="floor").type(torch.int32)
+    neg_evts_frame = torch.div(neg_frame, neg_thres, rounding_mode="floor").type(torch.int32)
 
     #  max_events = max(pos_evts_frame.max(), neg_evts_frame.max())
 
@@ -342,9 +334,7 @@ def compute_photoreceptor_noise_voltage(
 
     # check if we already estimated the required noise for this sample rate
     if compute_photoreceptor_noise_voltage.last_sample_rate is not None:
-        diff = np.abs(
-            sample_rate_hz / compute_photoreceptor_noise_voltage.last_sample_rate - 1
-        )
+        diff = np.abs(sample_rate_hz / compute_photoreceptor_noise_voltage.last_sample_rate - 1)
         if diff < 0.1:
             return compute_photoreceptor_noise_voltage.last_vn  # return cached value
 
@@ -470,11 +460,10 @@ def generate_shot_noise(
     # we compute it by taking half the total shot noise rate (OFF only),
     # multiplying by the delta time of this frame,
     # and multiplying by the intensity factor
-    # division by num_iter is correct if generate_shot_noise is called outside the iteration loop, unless num_iter=1 for calling outside loop
-    shot_noise_factor = (
-        ((shot_noise_rate_hz / 2) * delta_time)
-        * ((shot_noise_inten_factor - 1) * inten01 + 1)
-    )  # =1 for inten=0 and SHOT_NOISE_INTEN_FACTOR for inten=1 # TODO check this logic again, the shot noise rate should increase with intensity but factor is negative here
+    # Note: shot noise is modeled as slightly more likely at lower intensities (SHOT_NOISE_INTEN_FACTOR < 1)
+    shot_noise_factor = ((shot_noise_rate_hz / 2) * delta_time) * (
+        (shot_noise_inten_factor - 1) * inten01 + 1
+    )
 
     # probability for each pixel is
     # dt*rate*nom_thres/actual_thres.
@@ -645,7 +634,9 @@ def _fused_batched_step(
     """
     B = frames_b.shape[0]
     # lin_log all frames at once (independent)
-    log_frames = torch.where(frames_b <= _LIN_LOG_THRESHOLD, frames_b * _LIN_LOG_F, torch.log(frames_b))
+    log_frames = torch.where(
+        frames_b <= _LIN_LOG_THRESHOLD, frames_b * _LIN_LOG_F, torch.log(frames_b)
+    )
     log_frames = torch.round(log_frames * _ROUNDING) / _ROUNDING
 
     # Pre-compute constants
@@ -687,6 +678,8 @@ def get_compiled_batched():
         except Exception:
             _compiled_batched = _fused_batched_step
     return _compiled_batched
+
+
 _compiled_step = None
 _compiled_step_leak = None
 
@@ -721,7 +714,9 @@ def get_compiled_step_leak_sn():
     global _compiled_step_leak_sn
     if _compiled_step_leak_sn is None:
         try:
-            _compiled_step_leak_sn = torch.compile(_fused_step_with_leak_and_shot_noise, mode="max-autotune")
+            _compiled_step_leak_sn = torch.compile(
+                _fused_step_with_leak_and_shot_noise, mode="max-autotune"
+            )
         except Exception:
             _compiled_step_leak_sn = _fused_step_with_leak_and_shot_noise
     return _compiled_step_leak_sn
@@ -733,6 +728,7 @@ def asm_events_cpu(pe, ne, ts_val, flat_to_x=None, flat_to_y=None):
     Uses 1D nonzero (8.3x faster than 2D) + divmod/LUT for coordinates.
     """
     import numpy as np
+
     pe_np = pe.cpu().numpy()
     ne_np = ne.cpu().numpy()
     W = pe_np.shape[1]

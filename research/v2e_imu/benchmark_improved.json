@@ -1,11 +1,11 @@
 {
   "version": "Improved",
   "model_params_M": 1.192692,
-  "inference_fps": 7.647900430605394,
-  "inference_latency_ms": 130.75484037399292,
-  "event_bpb": 2.596807968060464e-07,
-  "event_mse": 1.7999701215167108e-07,
-  "event_rate_error": 324.2495880126953,
-  "depth_motion_error": 5.147221326828003,
-  "eval_time_s": 10.34930682182312
+  "inference_fps": 6.992881041150181,
+  "inference_latency_ms": 143.00257563591003,
+  "event_bpb": 9.121633528679792e-07,
+  "event_mse": 6.322634562505463e-07,
+  "event_rate_error": 1190.177978515625,
+  "depth_motion_error": 4.94131600856781,
+  "eval_time_s": 10.413458108901978
 }

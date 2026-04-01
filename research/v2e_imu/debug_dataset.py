@@ -13,12 +13,12 @@ Usage:
     uv run python debug_dataset.py
 """
 
-import numpy as np
 from pathlib import Path
-from typing import Dict, List
+
+import numpy as np
 
 
-def load_events_file(filepath: Path) -> Dict[str, np.ndarray]:
+def load_events_file(filepath: Path) -> dict[str, np.ndarray]:
     """Load events from text file."""
     print(f"Loading {filepath}...")
     
@@ -46,7 +46,7 @@ def load_events_file(filepath: Path) -> Dict[str, np.ndarray]:
     }
 
 
-def analyze_events(events: Dict[str, np.ndarray], name: str) -> Dict:
+def analyze_events(events: dict[str, np.ndarray], name: str) -> dict:
     """Analyze event statistics."""
     print(f"\n{'='*60}")
     print(f"ANALYZING: {name}")
@@ -86,24 +86,24 @@ def analyze_events(events: Dict[str, np.ndarray], name: str) -> Dict:
     }
     
     # Print results
-    print(f"\n📊 BASIC STATISTICS")
+    print("\n📊 BASIC STATISTICS")
     print(f"  Total events:      {total_events:,}")
     print(f"  Duration:          {duration:.1f}s")
     print(f"  Event rate:        {event_rate:.0f} events/sec")
     
-    print(f"\n🔃 POLARITY BALANCE")
+    print("\n🔃 POLARITY BALANCE")
     print(f"  Positive events:   {pos_events:,} ({pos_ratio*100:.1f}%)")
     print(f"  Negative events:   {neg_events:,} ({(1-pos_ratio)*100:.1f}%)")
     print(f"  Balance ratio:     {pos_ratio/(1-pos_ratio) if pos_ratio < 1 else float('inf'):.2f}")
     
-    print(f"\n🗺️  SPATIAL DISTRIBUTION")
+    print("\n🗺️  SPATIAL DISTRIBUTION")
     print(f"  Mean per pixel:    {spatial_stats['mean']:.2f}")
     print(f"  Std per pixel:     {spatial_stats['std']:.2f}")
     print(f"  Max per pixel:     {spatial_stats['max']:,}")
     print(f"  Min per pixel:     {spatial_stats['min']}")
     print(f"  Non-zero pixels:   {spatial_stats['nonzero_ratio']*100:.1f}%")
     
-    print(f"\n⏱️  TEMPORAL DISTRIBUTION")
+    print("\n⏱️  TEMPORAL DISTRIBUTION")
     print(f"  Mean rate/sec:     {temporal_stats['mean_rate']:.0f}")
     print(f"  Std rate/sec:      {temporal_stats['std_rate']:.0f}")
     print(f"  Max rate/sec:      {temporal_stats['max_rate']:,}")
@@ -120,7 +120,7 @@ def analyze_events(events: Dict[str, np.ndarray], name: str) -> Dict:
     }
 
 
-def compare_datasets(stats_list: List[Dict]) -> None:
+def compare_datasets(stats_list: list[dict]) -> None:
     """Compare statistics across datasets."""
     print(f"\n{'='*60}")
     print("DATASET COMPARISON")
@@ -135,7 +135,7 @@ def compare_datasets(stats_list: List[Dict]) -> None:
     
     print(f"\n{'Metric':<25} {base['name']:<15}", end="")
     for stats in stats_list[1:]:
-        ratio = stats['total_events'] / base['total_events']
+        ratio = stats["total_events"] / base["total_events"]
         print(f" {stats['name']:<15} (x{ratio:.0f})", end="")
     print()
     
@@ -147,7 +147,7 @@ def compare_datasets(stats_list: List[Dict]) -> None:
     
     print(f"{'Event rate (evt/s):':<25} {base['event_rate']:<15,.0f}", end="")
     for stats in stats_list[1:]:
-        ratio = stats['event_rate'] / base['event_rate']
+        ratio = stats["event_rate"] / base["event_rate"]
         print(f" {stats['event_rate']:<15,.0f} (x{ratio:.1f})", end="")
     print()
     
@@ -158,13 +158,13 @@ def compare_datasets(stats_list: List[Dict]) -> None:
     
     print(f"{'Spatial mean/pixel:':<25} {base['spatial']['mean']:<15.2f}", end="")
     for stats in stats_list[1:]:
-        ratio = stats['spatial']['mean'] / base['spatial']['mean']
+        ratio = stats["spatial"]["mean"] / base["spatial"]["mean"]
         print(f" {stats['spatial']['mean']:<15.2f} (x{ratio:.0f})", end="")
     print()
     
     print(f"{'Temporal mean rate:':<25} {base['temporal']['mean_rate']:<15,.0f}", end="")
     for stats in stats_list[1:]:
-        ratio = stats['temporal']['mean_rate'] / base['temporal']['mean_rate']
+        ratio = stats["temporal"]["mean_rate"] / base["temporal"]["mean_rate"]
         print(f" {stats['temporal']['mean_rate']:<15,.0f} (x{ratio:.1f})", end="")
     print()
 
@@ -207,8 +207,8 @@ def main() -> None:
             mini = all_stats[0]
             full = all_stats[1]
             
-            event_rate_ratio = full['event_rate'] / mini['event_rate']
-            spatial_ratio = full['spatial']['mean'] / mini['spatial']['mean']
+            event_rate_ratio = full["event_rate"] / mini["event_rate"]
+            spatial_ratio = full["spatial"]["mean"] / mini["spatial"]["mean"]
             
             print(f"\n1. Event density: Full dataset has {event_rate_ratio:.0f}x higher event rate")
             print(f"   → This makes prediction {event_rate_ratio:.0f}x harder!")
@@ -216,20 +216,20 @@ def main() -> None:
             print(f"\n2. Spatial density: Full dataset has {spatial_ratio:.0f}x more events per pixel")
             print(f"   → Model needs to predict {spatial_ratio:.0f}x more events")
             
-            print(f"\n3. Polarity balance:")
+            print("\n3. Polarity balance:")
             print(f"   Mini-FPV: {mini['pos_ratio']:.3f} positive")
             print(f"   Full:     {full['pos_ratio']:.3f} positive")
-            if abs(mini['pos_ratio'] - full['pos_ratio']) > 0.05:
-                print(f"   ⚠️  SIGNIFICANT DIFFERENCE - may affect learning!")
+            if abs(mini["pos_ratio"] - full["pos_ratio"]) > 0.05:
+                print("   ⚠️  SIGNIFICANT DIFFERENCE - may affect learning!")
             
-            print(f"\n4. Temporal variance:")
+            print("\n4. Temporal variance:")
             print(f"   Mini-FPV: {mini['temporal']['std_rate']:.0f} std")
             print(f"   Full:     {full['temporal']['std_rate']:.0f} std")
-            if full['temporal']['std_rate'] > mini['temporal']['std_rate'] * 2:
-                print(f"   ⚠️  Full dataset has much more variable event rate!")
+            if full["temporal"]["std_rate"] > mini["temporal"]["std_rate"] * 2:
+                print("   ⚠️  Full dataset has much more variable event rate!")
         
-        print(f"\n✅ Dataset analysis complete!")
-        print(f"   Next: Check evaluation metric calculation")
+        print("\n✅ Dataset analysis complete!")
+        print("   Next: Check evaluation metric calculation")
 
 
 if __name__ == "__main__":

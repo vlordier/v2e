@@ -6,15 +6,17 @@ Usage:
     uv run python benchmark_fast.py
 """
 
+import json
 import sys
 import time
-import torch
 from pathlib import Path
+
+import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from prepare_data import make_dataloader, evaluate_combined_metric
-from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
+from prepare_data import evaluate_combined_metric, make_dataloader
+from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
 def count_parameters(model):
@@ -23,33 +25,29 @@ def count_parameters(model):
 
 
 def benchmark_inference(model, device, dataloader, num_batches=5):
-    """Benchmark inference speed with optimizations."""
+    """Benchmark inference speed."""
     model.eval()
-    
+
     # Warm-up
-    with torch.inference_mode():
+    with torch.no_grad():
         for i, batch in enumerate(dataloader):
             if i >= 2:
                 break
             images = batch["image"].to(device)
             imu_seq = batch["imu_seq"].to(device)
             _ = model(images, imu_seq)
-    
-    # Benchmark with inference mode (faster than no_grad)
+
     start = time.time()
-    
     total_samples = 0
     with torch.inference_mode():
         for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break
-            
             images = batch["image"].to(device)
             imu_seq = batch["imu_seq"].to(device)
             _ = model(images, imu_seq)
-            
             total_samples += images.shape[0]
-    
+
     elapsed = time.time() - start
     
     return {
@@ -76,7 +74,7 @@ def run_benchmark(version_name="Improved"):
     model = EventPredictor(config).to(device)
     
     # Load checkpoint if available
-    checkpoint_path = Path("3d_aware_model_checkpoint.pt")
+    checkpoint_path = Path(__file__).parent / "3d_aware_model_checkpoint.pt"
     if checkpoint_path.exists():
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint["model_state_dict"], strict=False)
@@ -90,7 +88,8 @@ def run_benchmark(version_name="Improved"):
     
     # Create dataloader (mini-FPV for speed)
     print("Loading mini-FPV data...")
-    val_loader = make_dataloader("data/fpv/mini_fpv", "val", 16, 50, (260, 346))
+    data_path = str(Path(__file__).parent / "data" / "fpv" / "mini_fpv")
+    val_loader = make_dataloader(data_path, "val", 16, 50, (260, 346))
     print("✅ Data loaded")
     print()
     
@@ -124,16 +123,15 @@ def run_benchmark(version_name="Improved"):
     print("="*60)
     
     # Save results
-    import json
     results = {
         "version": version_name,
         "model_params_M": num_params / 1e6,
-        "inference_fps": inf_results['fps'],
-        "inference_latency_ms": inf_results['latency_ms'],
-        "event_bpb": metrics['event_bpb'],
-        "event_mse": metrics['event_mse'],
-        "event_rate_error": metrics['event_rate_error'],
-        "depth_motion_error": metrics['depth_motion_error'],
+        "inference_fps": inf_results["fps"],
+        "inference_latency_ms": inf_results["latency_ms"],
+        "event_bpb": metrics["event_bpb"],
+        "event_mse": metrics["event_mse"],
+        "event_rate_error": metrics["event_rate_error"],
+        "depth_motion_error": metrics["depth_motion_error"],
         "eval_time_s": eval_time,
     }
     

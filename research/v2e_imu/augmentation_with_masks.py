@@ -16,9 +16,9 @@ Usage:
     # Evaluate: check pred_events[occlusion_mask] ≈ 0
 """
 
+
 import torch
 import torch.nn.functional as F
-from typing import Tuple, Dict
 
 
 def augment_with_occlusion_mask(
@@ -26,7 +26,7 @@ def augment_with_occlusion_mask(
     imu_seq: torch.Tensor,
     gt_events: torch.Tensor,
     return_mask: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Apply RGB augmentations and return occlusion mask.
     
@@ -104,7 +104,7 @@ def compute_occlusion_aware_metrics(
     pred_events: torch.Tensor,
     gt_events: torch.Tensor,
     occlusion_mask: torch.Tensor,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Compute metrics that check if model generates events in occluded regions.
     
@@ -174,7 +174,7 @@ def compute_occlusion_aware_metrics(
     }
 
 
-def print_occlusion_metrics(metrics: Dict[str, float]) -> None:
+def print_occlusion_metrics(metrics: dict[str, float]) -> None:
     """Print occlusion-aware metrics."""
     print("\n" + "=" * 60)
     print("OCCLUSION-AWARE METRICS")
@@ -194,16 +194,16 @@ def print_occlusion_metrics(metrics: Dict[str, float]) -> None:
     
     # Assessment
     print("\n📋 ASSESSMENT")
-    if metrics['occlusion_violation_score'] < 0.01:
+    if metrics["occlusion_violation_score"] < 0.01:
         print("  ✅ Model correctly suppresses events in occluded regions")
-    elif metrics['occlusion_violation_score'] < 0.1:
+    elif metrics["occlusion_violation_score"] < 0.1:
         print("  ⚠️  Model generates some events in occluded regions")
     else:
         print("  ❌ Model heavily hallucinates in occluded regions!")
     
-    if metrics['visible_precision'] > 0.7 and metrics['visible_recall'] > 0.7:
+    if metrics["visible_precision"] > 0.7 and metrics["visible_recall"] > 0.7:
         print("  ✅ Good performance in visible regions")
-    elif metrics['visible_precision'] > 0.5 or metrics['visible_recall'] > 0.5:
+    elif metrics["visible_precision"] > 0.5 or metrics["visible_recall"] > 0.5:
         print("  ⚠️  Moderate performance in visible regions")
     else:
         print("  ❌ Poor performance in visible regions")

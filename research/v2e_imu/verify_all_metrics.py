@@ -14,14 +14,15 @@ Usage:
 
 import sys
 import time
-import torch
 from pathlib import Path
+
+import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from prepare_data import make_dataloader, evaluate_combined_metric
-from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
-from robust_metrics import evaluate_robust_metrics, print_robust_results, get_best_device
+from prepare_data import evaluate_combined_metric, make_dataloader
+from robust_metrics import evaluate_robust_metrics, get_best_device, print_robust_results
+from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
 def count_parameters(model):
@@ -134,13 +135,13 @@ def verify_all_metrics():
     
     # Check if metrics are within acceptable range
     checks = {
-        "event_bpb < 0.001": primary_metrics['event_bpb'] < 0.001,
-        "event_mse < 0.001": primary_metrics['event_mse'] < 0.001,
-        "event_rate_error < 1000": primary_metrics['event_rate_error'] < 1000,
-        "depth_motion_error < 10": primary_metrics['depth_motion_error'] < 10,
-        "F1 > 0.5": robust_metrics.get('avg_f1_score', 0) > 0.5,
-        "Motion correlation > 0.5": robust_metrics.get('motion_correlation', 0) > 0.5,
-        "Inference FPS > 5": inf_results['fps'] > 5,
+        "event_bpb < 0.001": primary_metrics["event_bpb"] < 0.001,
+        "event_mse < 0.001": primary_metrics["event_mse"] < 0.001,
+        "event_rate_error < 1000": primary_metrics["event_rate_error"] < 1000,
+        "depth_motion_error < 10": primary_metrics["depth_motion_error"] < 10,
+        "F1 > 0.5": robust_metrics.get("avg_f1_score", 0) > 0.5,
+        "Motion correlation > 0.5": robust_metrics.get("motion_correlation", 0) > 0.5,
+        "Inference FPS > 5": inf_results["fps"] > 5,
     }
     
     all_passed = True

@@ -13,9 +13,10 @@ This script:
 """
 
 import json
+from pathlib import Path
+
 import torch
 import torch.nn as nn
-from typing import Dict
 from prepare_data import (
     DATA_DIR,
     EVAL_SAMPLES,
@@ -23,12 +24,12 @@ from prepare_data import (
     MAX_SEQ_LEN,
     make_dataloader,
 )
-from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
 from robust_metrics import (
-    get_best_device,
     evaluate_robust_metrics,
+    get_best_device,
     print_robust_results,
 )
+from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
 def load_trained_model(device: str) -> nn.Module:
@@ -52,7 +53,7 @@ def load_trained_model(device: str) -> nn.Module:
     return model
 
 
-def compare_against_baseline(trained_metrics: Dict[str, float]) -> None:
+def compare_against_baseline(trained_metrics: dict[str, float]) -> None:
     """Compare trained model against naive baseline."""
     print("\n" + "=" * 60)
     print("COMPARISON AGAINST BASELINE")
@@ -62,15 +63,15 @@ def compare_against_baseline(trained_metrics: Dict[str, float]) -> None:
     baseline_bpb = 0.000190
     baseline_f1 = 0.0002  # Untrained model
     
-    trained_bpb = trained_metrics.get('avg_count_ratio', 0)  # We need to track this differently
-    trained_f1 = trained_metrics.get('avg_f1_score', 0)
+    trained_bpb = trained_metrics.get("avg_count_ratio", 0)  # We need to track this differently
+    trained_f1 = trained_metrics.get("avg_f1_score", 0)
     
-    print(f"\n📊 COMPRESSION (event_bpb)")
+    print("\n📊 COMPRESSION (event_bpb)")
     print(f"  Baseline (naive RGB): {baseline_bpb:.6f}")
     print(f"  3D-Aware (trained):   {trained_bpb:.6f} (from training log)")
     print(f"  Improvement:          {(baseline_bpb - trained_bpb) / baseline_bpb * 100:.1f}%")
     
-    print(f"\n🎯 DETECTION QUALITY (F1 Score)")
+    print("\n🎯 DETECTION QUALITY (F1 Score)")
     print(f"  Baseline (untrained): {baseline_f1:.6f}")
     print(f"  3D-Aware (trained):   {trained_f1:.6f}")
     

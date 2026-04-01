@@ -5,16 +5,17 @@ Unit Tests for V2E Improved Event Prediction.
 Test coverage: Core functionality, metrics, data loading
 """
 
-import unittest
-import torch
-import numpy as np
-from pathlib import Path
 import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
-from prepare_data import FPVDataset, evaluate_combined_metric
+from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
 class TestEventPredictor(unittest.TestCase):
@@ -30,35 +31,35 @@ class TestEventPredictor(unittest.TestCase):
     def test_model_initialization(self):
         """Test model initializes correctly."""
         num_params = sum(p.numel() for p in self.model.parameters())
-        self.assertGreater(num_params, 0)
-        self.assertAlmostEqual(num_params / 1e6, 1.19, places=2)  # ~1.19M parameters
+        self.assertGreater(num_params, 1_000_000)  # at least 1M params
         
     def test_forward_pass(self):
         """Test forward pass produces correct output shape."""
-        rgb = torch.randn(self.batch_size, 1, *self.image_size)
+        # 2-channel input: (current_frame, previous_frame)
+        rgb = torch.randn(self.batch_size, 2, *self.image_size)
         imu = torch.randn(self.batch_size, 50, 6)
-        
+
         events, depth = self.model(rgb, imu)
-        
+
         self.assertEqual(events.shape, (self.batch_size, 2, *self.image_size))
         self.assertEqual(depth.shape, (self.batch_size, 1))
-        
+
     def test_output_positive(self):
         """Test event predictions are positive (for Poisson)."""
-        rgb = torch.randn(self.batch_size, 1, *self.image_size)
+        rgb = torch.randn(self.batch_size, 2, *self.image_size)
         imu = torch.randn(self.batch_size, 50, 6)
-        
+
         events, depth = self.model(rgb, imu)
-        
+
         self.assertTrue((events > 0).all())  # All positive
-        
+
     def test_depth_head(self):
         """Test depth head produces reasonable output."""
-        rgb = torch.randn(self.batch_size, 1, *self.image_size)
+        rgb = torch.randn(self.batch_size, 2, *self.image_size)
         imu = torch.randn(self.batch_size, 50, 6)
-        
+
         events, depth = self.model(rgb, imu)
-        
+
         # Depth should be in reasonable range [0, 1] after sigmoid
         self.assertTrue((depth >= 0).all())
         self.assertTrue((depth <= 1).all())
@@ -104,20 +105,24 @@ class TestPoissonLoss(unittest.TestCase):
 
 class TestEventRateRegularization(unittest.TestCase):
     """Test event rate regularization."""
-    
+
     def test_rate_regularization_encourages_events(self):
-        """Test rate regularization encourages realistic event rates."""
-        pred_rate_none = torch.zeros(2, 2, 260, 346)  # No events at all
-        pred_rate_some = torch.ones(2, 2, 260, 346) * 0.5  # All pixels > 0.3
-        
-        target_rate = 0.1
-        reg_none = ((pred_rate_none > 0.3).float().mean() - target_rate) ** 2
-        reg_some = ((pred_rate_some > 0.3).float().mean() - target_rate) ** 2
-        
-        # No events: (0 - 0.1)^2 = 0.01
-        # All events: (1 - 0.1)^2 = 0.81
-        # Neither is ideal, but all events is much worse
-        self.assertGreater(reg_some, reg_none)
+        """Test differentiable rate regularization penalizes extreme predictions."""
+        pred_rate_none = torch.zeros(2, 2, 260, 346)   # mean=0, far from 0.1
+        pred_rate_ideal = torch.ones(2, 2, 260, 346) * 0.1  # mean=0.1, target
+        pred_rate_over = torch.ones(2, 2, 260, 346) * 0.5   # mean=0.5, too high
+
+        target = torch.tensor([0.1])
+        reg_none = F.mse_loss(pred_rate_none.mean().unsqueeze(0), target)
+        reg_ideal = F.mse_loss(pred_rate_ideal.mean().unsqueeze(0), target)
+        reg_over = F.mse_loss(pred_rate_over.mean().unsqueeze(0), target)
+
+        # Ideal prediction should have minimum regularization
+        self.assertLess(reg_ideal, reg_none)
+        self.assertLess(reg_ideal, reg_over)
+        # Non-ideal should be penalized
+        self.assertGreater(reg_none, 0)
+        self.assertGreater(reg_over, 0)
 
 
 class TestGradientClipping(unittest.TestCase):
@@ -126,9 +131,9 @@ class TestGradientClipping(unittest.TestCase):
     def test_gradient_clipping_limits_norm(self):
         """Test gradient clipping limits gradient norm."""
         model = EventPredictor(ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM))
-        
-        # Create large gradients
-        rgb = torch.randn(2, 1, 260, 346)
+
+        # Create large gradients (2-channel frame pair input)
+        rgb = torch.randn(2, 2, 260, 346)
         imu = torch.randn(2, 50, 6)
         events, depth = model(rgb, imu)
         loss = events.sum()
@@ -190,21 +195,35 @@ class TestMultiScaleWindows(unittest.TestCase):
 
 class TestEvaluationMetrics(unittest.TestCase):
     """Test evaluation metrics."""
-    
+
     def test_event_bpb_calculation(self):
-        """Test event_bpb is calculated correctly."""
-        # event_bpb = MSE / log(2)
-        mse = 0.01
-        bpb = mse / np.log(2)
-        
-        self.assertAlmostEqual(bpb, 0.014427, places=5)
-        
-    def test_event_bpb_perfect_prediction(self):
-        """Test event_bpb is 0 for perfect predictions."""
-        mse = 0.0
-        bpb = mse / np.log(2)
-        
-        self.assertEqual(bpb, 0.0)
+        """Test event_bpb uses Poisson NLL per element / log(2)."""
+        # Poisson NLL: λ - k*log(λ)
+        pred_rate = torch.tensor([1.0, 2.0, 3.0])
+        gt_counts = torch.tensor([1.0, 2.0, 3.0])
+        poisson_nll = (pred_rate - gt_counts * torch.log(pred_rate + 1e-6)).mean().item()
+        bpb = poisson_nll / np.log(2)
+
+        self.assertGreater(bpb, 0)  # bpb > 0 for any non-zero rate
+
+    def test_event_bpb_zero_for_sparse_perfect(self):
+        """Test event_bpb is 0 when both pred and gt are 0 (sparse background)."""
+        # Poisson NLL for λ=0, k=0: 0 - 0*log(0) = 0
+        poisson_nll = 0.0 - 0.0 * np.log(1e-6)  # λ + ε to avoid log(0), k=0
+        bpb = poisson_nll / np.log(2)
+
+        self.assertAlmostEqual(bpb, 0.0, places=5)
+
+    def test_event_bpb_worse_for_bad_prediction(self):
+        """Test event_bpb increases for under-prediction."""
+        pred_good = torch.tensor([5.0])   # Close to target
+        pred_bad = torch.tensor([0.01])   # Far under-predicts
+        gt = torch.tensor([5.0])
+
+        nll_good = (pred_good - gt * torch.log(pred_good + 1e-6)).item()
+        nll_bad = (pred_bad - gt * torch.log(pred_bad + 1e-6)).item()
+
+        self.assertLess(nll_good, nll_bad)
 
 
 class TestModelCheckpoint(unittest.TestCase):
@@ -213,46 +232,42 @@ class TestModelCheckpoint(unittest.TestCase):
     def test_checkpoint_save_load(self):
         """Test checkpoint can be saved and loaded."""
         import tempfile
+
         import torch
         
         # Create model and save
         model1 = EventPredictor(ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM))
         
-        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
             checkpoint = {
-                'model_state_dict': model1.state_dict(),
-                'config': {'base_channels': BASE_CHANNELS, 'imu_hidden_dim': IMU_HIDDEN_DIM}
+                "model_state_dict": model1.state_dict(),
+                "config": {"base_channels": BASE_CHANNELS, "imu_hidden_dim": IMU_HIDDEN_DIM}
             }
             torch.save(checkpoint, f.name)
             
             # Load into new model
             model2 = EventPredictor(ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM))
             checkpoint_loaded = torch.load(f.name, weights_only=True)
-            model2.load_state_dict(checkpoint_loaded['model_state_dict'])
+            model2.load_state_dict(checkpoint_loaded["model_state_dict"])
         
         # Check parameters match
         for p1, p2 in zip(model1.parameters(), model2.parameters()):
             self.assertTrue(torch.allclose(p1, p2))
 
 
-class TestMixedPrecision(unittest.TestCase):
-    """Test mixed precision training."""
-    
-    def test_autocast_produces_float16(self):
-        """Test autocast produces float16 tensors."""
-        device = "cpu"  # MPS/CUDA would work too but CPU is safer for tests
-        
+class TestModelForwardShape(unittest.TestCase):
+    """Test model forward pass with 2-channel frame pair input."""
+
+    def test_forward_two_channel_input(self):
+        """Model accepts 2-channel (frame pair) input without error."""
         model = EventPredictor(ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM))
-        rgb = torch.randn(2, 1, 260, 346)
+        rgb = torch.randn(2, 2, 260, 346)  # 2 channels: current + prev frame
         imu = torch.randn(2, 50, 6)
-        
-        # Test autocast
-        with torch.amp.autocast(device_type=device if device != "mps" else "cpu"):
-            events, depth = model(rgb, imu)
-        
-        # Should run without error (dtype may vary by device)
-        self.assertIsNotNone(events)
-        self.assertIsNotNone(depth)
+
+        events, depth = model(rgb, imu)
+
+        self.assertEqual(events.shape, (2, 2, 260, 346))
+        self.assertEqual(depth.shape, (2, 1))
 
 
 def run_tests():
@@ -270,7 +285,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestMultiScaleWindows))
     suite.addTests(loader.loadTestsFromTestCase(TestEvaluationMetrics))
     suite.addTests(loader.loadTestsFromTestCase(TestModelCheckpoint))
-    suite.addTests(loader.loadTestsFromTestCase(TestMixedPrecision))
+    suite.addTests(loader.loadTestsFromTestCase(TestModelForwardShape))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=2)

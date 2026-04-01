@@ -13,13 +13,10 @@ Runs multiple short training sessions and finds best configuration.
 """
 
 import json
-import os
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
-
 
 # Hyperparameter search space
 RATE_WEIGHTS = [0.001, 0.005, 0.01, 0.05, 0.1]
@@ -34,7 +31,7 @@ def run_training(
     rate_weight: float,
     depth_weight: float,
     time_budget: int = HPO_TIME_BUDGET,
-) -> Tuple[float, Dict[str, float]]:
+) -> tuple[float, dict[str, float]]:
     """
     Run training with specific hyperparameters.
     
@@ -108,7 +105,7 @@ def run_training(
         train_script.write_text(original_content)
 
 
-def parse_training_output(output: str) -> Dict[str, float]:
+def parse_training_output(output: str) -> dict[str, float]:
     """Parse training output for metrics."""
     metrics = {}
     
@@ -138,7 +135,7 @@ def parse_training_output(output: str) -> Dict[str, float]:
     return metrics
 
 
-def run_hpo_search() -> List[Dict]:
+def run_hpo_search() -> list[dict]:
     """Run complete HPO search."""
     print("="*60)
     print("HYPERPARAMETER OPTIMIZATION")
@@ -173,7 +170,7 @@ def run_hpo_search() -> List[Dict]:
     return all_results
 
 
-def save_hpo_results(results: List[Dict]) -> None:
+def save_hpo_results(results: list[dict]) -> None:
     """Save HPO results to file."""
     output_file = f"hpo_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     
@@ -188,7 +185,7 @@ def save_hpo_results(results: List[Dict]) -> None:
     print(f"Results saved to: {output_file}")
 
 
-def print_best_results(results: List[Dict]) -> None:
+def print_best_results(results: list[dict]) -> None:
     """Print and analyze best results."""
     print("\n" + "="*60)
     print("BEST CONFIGURATIONS")

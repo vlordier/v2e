@@ -21,6 +21,138 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+# Try to import cv2 for optical flow, fallback to simple gradient-based approach
+try:
+    import cv2
+
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
+
+# Try to import timm for DINO features
+try:
+    import timm
+
+    HAS_TIMM = True
+    # Load DINO model once (cached)
+    # NOTE: DINO extraction is disabled by default due to worker segfault issues
+    # Enable by setting USE_DINO=True before creating dataloader
+    _DINO_MODEL = None
+    _DINO_DEVICE = None
+    USE_DINO = False  # Set to True to enable DINO features
+    _DINO_BATCH_CACHE = None
+
+    def get_dino_features(img: np.ndarray, device: str = "cpu") -> np.ndarray:
+        """Extract DINO features from a grayscale image.
+
+        Args:
+            img: Grayscale image (H, W) in range [0, 1]
+            device: Device to run model on
+
+        Returns:
+            features: DINO features (384,) for small model
+        """
+        global _DINO_MODEL, _DINO_DEVICE
+
+        if not USE_DINO:
+            return np.zeros(384, dtype=np.float32)
+
+        # Initialize model on first call
+        if _DINO_MODEL is None or _DINO_DEVICE != device:
+            import torch
+
+            _DINO_MODEL = timm.create_model(
+                "vit_small_patch8_224.dino", pretrained=True, num_classes=0
+            )
+            _DINO_MODEL = _DINO_MODEL.to(device)
+            _DINO_MODEL.eval()
+            _DINO_DEVICE = device
+            print(f"Loaded DINO model on {device}")
+
+        # Prepare image: grayscale → 3-channel, resize to 224
+        import torch
+        import torch.nn.functional as F
+
+        img_3ch = np.stack([img, img, img], axis=0)  # (3, H, W)
+        img_tensor = torch.from_numpy(img_3ch).float().unsqueeze(0)  # (1, 3, H, W)
+
+        # Resize to 224x224
+        img_tensor = F.interpolate(
+            img_tensor, size=(224, 224), mode="bilinear", align_corners=False
+        )
+
+        # Normalize
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        img_tensor = (img_tensor - mean) / std
+
+        with torch.no_grad():
+            features = _DINO_MODEL(img_tensor.to(device))
+
+        return features.squeeze(0).cpu().numpy()
+
+    def extract_dino_batch(images: torch.Tensor, device: str = "cpu") -> torch.Tensor:
+        """Extract DINO features for a batch of images in main process.
+
+        Args:
+            images: (B, C, H, W) tensor of images
+            device: device to run on
+
+        Returns:
+            dino_features: (B, 384) tensor
+        """
+        global _DINO_MODEL, _DINO_DEVICE, USE_DINO
+
+        if not USE_DINO:
+            return torch.zeros(images.shape[0], 384, device=device)
+
+        import torch.nn.functional as F
+
+        # Ensure model is loaded
+        if _DINO_MODEL is None:
+            _DINO_MODEL = timm.create_model(
+                "vit_small_patch8_224.dino", pretrained=True, num_classes=0
+            )
+            _DINO_MODEL = _DINO_MODEL.to(device)
+            _DINO_MODEL.eval()
+            _DINO_DEVICE = device
+            print(f"Loaded DINO model on {device}")
+
+        B, C, H, W = images.shape
+
+        # Convert to 3-channel and resize
+        if C == 1:
+            images_3ch = images.repeat(1, 3, 1, 1)  # (B, 3, H, W)
+        else:
+            images_3ch = images[:, :3, :, :]  # Take first 3 if more
+
+        # Resize to 224x224
+        images_224 = F.interpolate(
+            images_3ch.float(), size=(224, 224), mode="bilinear", align_corners=False
+        )
+
+        # Normalize
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
+        images_224 = (images_224 - mean) / std
+
+        with torch.no_grad():
+            features = _DINO_MODEL(images_224.to(device))
+
+        return features
+
+except ImportError:
+    HAS_TIMM = False
+    USE_DINO = False
+
+    def get_dino_features(img: np.ndarray, device: str = "cpu") -> np.ndarray:
+        """Fallback when timm not available."""
+        return np.zeros(384, dtype=np.float32)
+
+    def extract_dino_batch(images: torch.Tensor, device: str = "cpu") -> torch.Tensor:
+        """Fallback when timm not available."""
+        return torch.zeros(images.shape[0], 384, device=device)
+
 # ---------------------------------------------------------------------------
 # Constants (fixed, do not modify)
 # ---------------------------------------------------------------------------
@@ -34,6 +166,65 @@ EVENT_WINDOW_MS = 33  # Event accumulation window (30 Hz)
 # Data directory
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "fpv")
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "data", "cache")
+
+
+def compute_optical_flow(img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
+    """Compute optical flow between two grayscale images.
+
+    Args:
+        img1: First image (H, W) in range [0, 1]
+        img2: Second image (H, W) in range [0, 1]
+
+    Returns:
+        flow: Optical flow (2, H, W) - flow_x, flow_y in range [-1, 1]
+    """
+    H, W = img1.shape
+
+    if HAS_CV2:
+        # Convert to uint8 for OpenCV
+        img1_uint8 = (img1 * 255).astype(np.uint8)
+        img2_uint8 = (img2 * 255).astype(np.uint8)
+
+        # Use Farneback algorithm (dense optical flow)
+        flow = cv2.calcOpticalFlowFarneback(
+            img1_uint8,
+            img2_uint8,
+            None,
+            pyr_scale=0.5,
+            levels=3,
+            winsize=15,
+            iterations=3,
+            poly_n=5,
+            poly_sigma=1.2,
+            flags=0,
+        )
+
+        # flow is (H, W, 2) -> normalize to [-1, 1]
+        flow = flow.transpose(2, 0, 1)  # (2, H, W)
+
+        # Normalize by image size to get pixel displacements as fraction
+        flow = flow / np.array([[[H]], [[W]]])
+
+        return flow.astype(np.float32)
+    else:
+        # Simple gradient-based flow (Horn-Schunck approximation)
+        # Compute image gradients
+        grad_x = np.diff(img1, axis=1, prepend=img1[:, :1])
+        grad_y = np.diff(img1, axis=0, prepend=img1[:1, :])
+
+        # Temporal gradient
+        grad_t = img2 - img1
+
+        # Simple optical flow estimation: u = -grad_t / (grad_x + epsilon)
+        epsilon = 1e-8
+        flow_x = -grad_t / (np.abs(grad_x) + epsilon)
+        flow_y = -grad_t / (np.abs(grad_y) + epsilon)
+
+        # Clip and normalize
+        flow_x = np.clip(flow_x, -1, 1)
+        flow_y = np.clip(flow_y, -1, 1)
+
+        return np.stack([flow_x, flow_y], axis=0).astype(np.float32)
 
 
 class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
@@ -65,6 +256,8 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         self.event_polarity: np.ndarray = np.array([], dtype=np.int8)
         self.image_timestamps: list[dict[str, Any]] = []
         self.use_synthetic = False
+        self._actual_data_dir: Path | None = None
+        self._image_ts_array: np.ndarray = np.array([], dtype=np.float64)
 
         # Try to load real data
         if self.data_dir.exists():
@@ -169,9 +362,14 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         if actual_data_dir is None:
             return
 
+        self._actual_data_dir = actual_data_dir
         self._load_imu_data(actual_data_dir)
         self._load_events_data(actual_data_dir)
         self._load_image_timestamps(actual_data_dir)
+        if self.image_timestamps:
+            self._image_ts_array = np.array(
+                [img["timestamp"] for img in self.image_timestamps], dtype=np.float64
+            )
 
     def _generate_synthetic_data(self) -> None:
         """Generate synthetic data for testing."""
@@ -250,14 +448,17 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
             start_idx = np.searchsorted(self.event_timestamps, start_time, side="left")
             end_idx = np.searchsorted(self.event_timestamps, end_time, side="right")
 
-            for i in range(start_idx, end_idx):
-                x = self.event_x[i]
-                y = self.event_y[i]
-                if 0 <= x < W and 0 <= y < H:
-                    if self.event_polarity[i] == 1:
-                        pos_events[y, x] += 1
-                    else:
-                        neg_events[y, x] += 1
+            if start_idx < end_idx:
+                x_v = self.event_x[start_idx:end_idx]
+                y_v = self.event_y[start_idx:end_idx]
+                p_v = self.event_polarity[start_idx:end_idx]
+                valid = (x_v >= 0) & (x_v < W) & (y_v >= 0) & (y_v < H)
+                x_v = x_v[valid]
+                y_v = y_v[valid]
+                p_v = p_v[valid]
+                pos_mask = p_v == 1
+                np.add.at(pos_events, (y_v[pos_mask], x_v[pos_mask]), 1)
+                np.add.at(neg_events, (y_v[~pos_mask], x_v[~pos_mask]), 1)
 
             # Normalize for this window size
             max_events = 100.0 * (dt_ms / 33.0)  # Scale max with window size
@@ -277,26 +478,61 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         """Get event map with caching for multi-scale windows (1.4x speedup)."""
         # Round timestamp to nearest 10ms for caching (reduces cache misses)
         timestamp_cached = round(timestamp * 100) / 100.0
-        
-        if not hasattr(self, '_event_cache'):
+
+        if not hasattr(self, "_event_cache"):
             self._event_cache = {}
-        
+
         if timestamp_cached in self._event_cache:
             return self._event_cache[timestamp_cached]
-        
+
         # Compute and cache
         event_map = self._get_event_map(timestamp)
-        
+
         # Limit cache size to 1000 entries (prevent memory blowup)
         if len(self._event_cache) < 1000:
             self._event_cache[timestamp_cached] = event_map
-        
+
         return event_map
 
     def _get_random_image(self) -> np.ndarray:
-        """Get a random grayscale image (placeholder)."""
+        """Get a random grayscale image (fallback when no real data available)."""
         H, W = self.image_size
         return np.random.rand(1, H, W).astype(np.float32)
+
+    def _find_closest_image_idx(self, timestamp: float) -> int:
+        """Return index of image with timestamp closest to given value."""
+        idx = int(np.searchsorted(self._image_ts_array, timestamp, side="left"))
+        if idx == 0:
+            return 0
+        if idx >= len(self._image_ts_array):
+            return len(self._image_ts_array) - 1
+        if abs(self._image_ts_array[idx] - timestamp) < abs(
+            self._image_ts_array[idx - 1] - timestamp
+        ):
+            return idx
+        return idx - 1
+
+    def _load_image_at_timestamp(self, timestamp: float) -> np.ndarray:
+        """Load grayscale image from disk closest to the given timestamp."""
+        if self.use_synthetic or not self.image_timestamps or self._actual_data_dir is None:
+            return self._get_random_image()
+
+        idx = self._find_closest_image_idx(timestamp)
+        img_path = self._actual_data_dir / self.image_timestamps[idx]["filename"]
+
+        if not img_path.exists():
+            return self._get_random_image()
+
+        try:
+            from PIL import Image as PILImage
+
+            resample = getattr(PILImage, "Resampling", PILImage).BILINEAR
+            img = PILImage.open(img_path).convert("L")
+            H, W = self.image_size
+            img = img.resize((W, H), resample)
+            return (np.array(img, dtype=np.float32) / 255.0)[np.newaxis, :, :]
+        except Exception:
+            return self._get_random_image()
 
     def __len__(self) -> int:
         return max(0, len(self.imu_data) - self.seq_len)
@@ -304,14 +540,30 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
     def __getitem__(self, idx: int) -> dict[str, Any]:
         imu_seq = self._get_imu_sequence(idx + self.seq_len // 2)
         timestamp = self.imu_data[idx + self.seq_len // 2]["timestamp"]
-        # Use cached version for 1.4x speedup
         events = self._get_event_map_cached(timestamp)
-        image = self._get_random_image()
+
+        # Load frame pair: events require temporal difference between frames.
+        # Return (current_frame, previous_frame) stacked as (2, H, W).
+        dt = self.event_window_ms / 1000.0
+        image_t = self._load_image_at_timestamp(timestamp)  # (1, H, W)
+        image_prev = self._load_image_at_timestamp(timestamp - dt)  # (1, H, W)
+        image = np.concatenate([image_t, image_prev], axis=0)  # (2, H, W)
+
+        # Compute optical flow between current and previous frame
+        flow = compute_optical_flow(image_t.squeeze(0), image_prev.squeeze(0))
+
+        # Extract DINO features from current frame
+        if HAS_TIMM:
+            dino_features = get_dino_features(image_t.squeeze(0), "cpu")
+        else:
+            dino_features = np.zeros(384, dtype=np.float32)  # fallback
 
         return {
             "image": torch.from_numpy(image),
             "imu_seq": torch.from_numpy(imu_seq),
             "events": torch.from_numpy(events),
+            "flow": torch.from_numpy(flow),
+            "dino": torch.from_numpy(dino_features),
             "timestamp": timestamp,
         }
 
@@ -338,54 +590,11 @@ def make_dataloader(
         shuffle=(split == "train"),
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=(num_workers > 0),  # Keep workers alive between epochs
-        prefetch_factor=2 if num_workers > 0 else None,  # Pre-fetch batches
-        timeout=60,  # Timeout for data loading
-        multiprocessing_context="fork" if sys.platform != "win32" else None,  # Better for macOS
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
+        timeout=60 if num_workers > 0 else 0,
+        multiprocessing_context="fork" if (num_workers > 0 and sys.platform != "win32") else None,
     )
-
-
-def evaluate_event_bpb(
-    model: torch.nn.Module,
-    dataloader: DataLoader,
-    device: str,
-    num_samples: int = EVAL_SAMPLES,
-) -> float:
-    """Evaluate model using bits per byte (BPB) metric for event prediction."""
-    model.eval()
-
-    total_loss = 0.0
-    total_bytes = 0
-    samples_processed = 0
-
-    with torch.no_grad():
-        for batch in dataloader:
-            if samples_processed >= num_samples:
-                break
-
-            images = batch["image"].to(device)
-            imu_seq = batch["imu_seq"].to(device)
-            gt_events = batch["events"].to(device)
-
-            # Model predicts Poisson rate λ
-            pred_rate = model(images, imu_seq)
-            
-            # Use Poisson NLL for evaluation (consistent with training!)
-            gt_counts = gt_events * 100.0  # Un-normalize to counts
-            pred_counts = pred_rate * 100.0
-            poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
-            loss = poisson_nll.sum()
-
-            batch_bytes = gt_events.numel()
-            total_loss += loss.item()
-            total_bytes += batch_bytes
-            samples_processed += images.shape[0]
-
-    if total_bytes == 0:
-        return float("inf")
-
-    bpb = (total_loss / total_bytes) / np.log(2)
-    return float(bpb)
 
 
 def evaluate_combined_metric(
@@ -404,11 +613,14 @@ def evaluate_combined_metric(
     """
     model.eval()
 
-    total_event_loss = 0.0
+    total_poisson_nll = 0.0
+    total_mse = 0.0
+    total_elements = 0
     total_rate_error = 0.0
     total_depth_motion_error = 0.0
     total_samples = 0
     start_time = time.time()
+    pred_depth = None
 
     with torch.no_grad():
         for batch in dataloader:
@@ -419,7 +631,6 @@ def evaluate_combined_metric(
             imu_seq = batch["imu_seq"].to(device)
             gt_events = batch["events"].to(device)
 
-            # Handle both old (events only) and new (events, depth) model outputs
             output = model(images, imu_seq)
             if isinstance(output, tuple):
                 pred_events, pred_depth = output
@@ -427,34 +638,39 @@ def evaluate_combined_metric(
                 pred_events = output
                 pred_depth = None
 
-            # Event prediction loss
-            event_loss = torch.nn.functional.mse_loss(pred_events, gt_events, reduction="sum")
-            total_event_loss += event_loss.item()
+            # Poisson NLL (consistent with training loss)
+            gt_counts = gt_events * 100.0
+            pred_counts = pred_events * 100.0
+            poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
+            total_poisson_nll += poisson_nll.sum().item()
 
-            # Event rate error: do events correlate with motion?
-            pred_event_rate = pred_events.abs().sum(dim=(1, 2, 3))  # (B,)
-            gt_event_rate = gt_events.abs().sum(dim=(1, 2, 3))  # (B,)
-            imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)  # (B,)
+            # MSE
+            total_mse += torch.nn.functional.mse_loss(
+                pred_events, gt_events, reduction="sum"
+            ).item()
+            total_elements += gt_events.numel()
 
-            rate_error = torch.nn.functional.mse_loss(pred_event_rate, gt_event_rate)
-            total_rate_error += rate_error.item()
+            # Event rate error
+            pred_event_rate = pred_events.abs().sum(dim=(1, 2, 3))
+            gt_event_rate = gt_events.abs().sum(dim=(1, 2, 3))
+            total_rate_error += torch.nn.functional.mse_loss(pred_event_rate, gt_event_rate).item()
 
-            # Depth-motion consistency (if model predicts depth)
+            # Depth-motion consistency
             if pred_depth is not None:
-                depth_motion_error = torch.nn.functional.mse_loss(pred_depth.squeeze(1), imu_motion)
-                total_depth_motion_error += depth_motion_error.item()
+                imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
+                total_depth_motion_error += torch.nn.functional.mse_loss(
+                    pred_depth.squeeze(1), imu_motion
+                ).item()
 
             total_samples += images.shape[0]
 
     elapsed = time.time() - start_time
     samples_per_sec = total_samples / elapsed if elapsed > 0 else 0
 
-    # Primary metrics
-    avg_event_mse = total_event_loss / (total_samples * gt_events[0].numel())
-    event_bpb = avg_event_mse / np.log(2)
+    # event_bpb: Poisson NLL per element in bits (consistent with training)
+    event_bpb = (total_poisson_nll / total_elements) / np.log(2)
+    avg_event_mse = total_mse / total_elements
     avg_rate_error = total_rate_error / total_samples
-
-    # Secondary metrics (Multimodal spatiotemporalness)
     avg_depth_motion_error = (
         total_depth_motion_error / total_samples if pred_depth is not None else 0.0
     )

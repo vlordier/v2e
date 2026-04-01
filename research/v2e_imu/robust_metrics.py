@@ -15,11 +15,10 @@ Usage:
 """
 
 import json
-import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List, Tuple
 from prepare_data import (
     DATA_DIR,
     EVAL_SAMPLES,
@@ -27,7 +26,7 @@ from prepare_data import (
     MAX_SEQ_LEN,
     make_dataloader,
 )
-from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
+from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
 def get_best_device() -> str:
@@ -44,7 +43,7 @@ def get_best_device() -> str:
 
 def compute_event_sparsity(
     pred_events: torch.Tensor, gt_events: torch.Tensor
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Analyze event sparsity - are we generating realistic event counts?"""
     pred_count = (pred_events.abs() > 0.01).sum().item()
     gt_count = (gt_events.abs() > 0.01).sum().item()
@@ -65,7 +64,7 @@ def compute_event_sparsity(
 
 def compute_temporal_consistency(
     pred_events: torch.Tensor, gt_events: torch.Tensor
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Check if events are temporally consistent (smooth over time)."""
     pred_rate = pred_events.abs().mean(dim=(1, 2, 3))
     gt_rate = gt_events.abs().mean(dim=(1, 2, 3))
@@ -82,7 +81,7 @@ def compute_temporal_consistency(
 
 def compute_spatial_coherence(
     pred_events: torch.Tensor, gt_events: torch.Tensor
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Check if events are spatially coherent (clustered properly)."""
     # Events shape: (B, 2, H, W) -> mean over channels -> (B, H, W)
     pred_spatial = pred_events.mean(dim=1)
@@ -121,7 +120,7 @@ def compute_spatial_coherence(
 
 def compute_precision_recall(
     pred_events: torch.Tensor, gt_events: torch.Tensor, threshold: float = 0.1
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute precision and recall for event detection."""
     pred_binary = pred_events.abs() > threshold
     gt_binary = gt_events.abs() > threshold
@@ -146,7 +145,7 @@ def compute_precision_recall(
 
 def compute_contrast_sensitivity(
     pred_events: torch.Tensor, gt_events: torch.Tensor
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Check if model detects both high and low contrast events."""
     high_contrast_mask = gt_events.abs() > 0.5
     low_contrast_mask = (gt_events.abs() > 0.1) & (gt_events.abs() <= 0.5)
@@ -174,7 +173,7 @@ def compute_contrast_sensitivity(
 
 def compute_rate_motion_correlation(
     pred_events: torch.Tensor, imu_seq: torch.Tensor
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Correlate event rate with IMU motion magnitude."""
     pred_rate = pred_events.abs().mean(dim=(1, 2, 3))
     imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
@@ -195,16 +194,16 @@ def evaluate_robust_metrics(
     device: str,
     num_samples: int = EVAL_SAMPLES,
     eval_batch_size: int = 8,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Comprehensive robust evaluation with proper batching."""
     model.eval()
 
-    all_sparsity: List[Dict[str, float]] = []
-    all_temporal: List[Dict[str, float]] = []
-    all_spatial: List[Dict[str, float]] = []
-    all_precision_recall: List[Dict[str, float]] = []
-    all_contrast: List[Dict[str, float]] = []
-    all_rate_motion: List[Dict[str, float]] = []
+    all_sparsity: list[dict[str, float]] = []
+    all_temporal: list[dict[str, float]] = []
+    all_spatial: list[dict[str, float]] = []
+    all_precision_recall: list[dict[str, float]] = []
+    all_contrast: list[dict[str, float]] = []
+    all_rate_motion: list[dict[str, float]] = []
 
     total_samples = 0
     batches_processed = 0
@@ -246,7 +245,7 @@ def evaluate_robust_metrics(
     print(f"  Total: {batches_processed} batches, {total_samples} samples")
 
     # Average all metrics
-    def average_list(list_of_dicts: List[Dict[str, float]], key: str) -> float:
+    def average_list(list_of_dicts: list[dict[str, float]], key: str) -> float:
         return sum(d[key] for d in list_of_dicts) / len(list_of_dicts)
 
     robust_metrics = {
@@ -280,7 +279,7 @@ def evaluate_robust_metrics(
     return robust_metrics
 
 
-def print_robust_results(metrics: Dict[str, float]) -> None:
+def print_robust_results(metrics: dict[str, float]) -> None:
     """Print robust metrics in readable format."""
     print("\n" + "=" * 60)
     print("ROBUST METRICS SUMMARY")

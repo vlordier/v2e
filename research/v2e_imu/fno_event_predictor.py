@@ -7,58 +7,62 @@ O(n log n) complexity, resolution-invariant.
 
 Usage:
     from fno_event_predictor import FNOEventPredictor
-    model = FNOEventPredictor(modes=16)
+    model = FNOEventPredictor()  # modes=4 default
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class FourierLayer(nn.Module):
-    """Fourier neural operator layer (global mixing in frequency domain)."""
-    
+    """Fourier neural operator layer (global mixing in frequency domain).
+
+    Uses separate learnable complex weights per frequency bin, which is the
+    core FNO design: each low-frequency mode gets its own (C_in → C_out) mixing.
+    """
+
     def __init__(self, channels: int, modes: int = 16) -> None:
         super().__init__()
         self.modes = modes
         self.channels = channels
-        
-        # Learnable weights in Fourier space
-        self.scale = nn.Linear(channels, channels, bias=False)
-        
+
+        # Per-frequency complex weights stored as real/imag pairs: (C_out, C_in, modes, modes)
+        scale = 1.0 / (channels * channels)
+        self.weight_real = nn.Parameter(scale * torch.randn(channels, channels, modes, modes))
+        self.weight_imag = nn.Parameter(scale * torch.randn(channels, channels, modes, modes))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: (B, C, H, W) spatial features
         Returns:
-            x_out: (B, C, H, W) features after global mixing
+            x_out: (B, C, H, W) features after global frequency mixing
         """
         B, C, H, W = x.shape
-        
-        # FFT to frequency domain
-        x_fft = torch.fft.rfft2(x)
-        
-        # Filter low frequencies only (learnable)
-        # Create frequency mask
-        mask = torch.zeros_like(x_fft)
-        mask[:, :, :self.modes, :self.modes] = 1
-        
-        # Apply learned filter in Fourier space (handle complex dtype)
-        # Split into real and imaginary parts for linear layer
-        x_real = x_fft.real
-        x_imag = x_fft.imag
-        
-        # Apply scale to both real and imaginary
-        x_real_scaled = self.scale(x_real.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        x_imag_scaled = self.scale(x_imag.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        
-        # Apply mask
-        x_filtered = (x_real_scaled + 1j * x_imag_scaled) * mask
-        
-        # IFFT back to spatial domain
-        x_out = torch.fft.irfft2(x_filtered, s=(H, W))
-        
-        return x_out
+
+        x_fft = torch.fft.rfft2(x)  # (B, C, H, W//2+1), complex
+
+        # Extract low-frequency block
+        x_r = x_fft[:, :, :self.modes, :self.modes].real  # (B, C_in, modes, modes)
+        x_i = x_fft[:, :, :self.modes, :self.modes].imag
+
+        # Complex multiply per frequency: out = W * x  (W = W_r + i*W_i)
+        # out_r = W_r @ x_r - W_i @ x_i
+        # out_i = W_r @ x_i + W_i @ x_r
+        out_r = (
+            torch.einsum("oimn,bimn->bomn", self.weight_real, x_r)
+            - torch.einsum("oimn,bimn->bomn", self.weight_imag, x_i)
+        )
+        out_i = (
+            torch.einsum("oimn,bimn->bomn", self.weight_real, x_i)
+            + torch.einsum("oimn,bimn->bomn", self.weight_imag, x_r)
+        )
+
+        # Embed back into full FFT buffer
+        out_fft = torch.zeros_like(x_fft)
+        out_fft[:, :, :self.modes, :self.modes] = out_r + 1j * out_i
+
+        return torch.fft.irfft2(out_fft, s=(H, W))
 
 
 class FNOEventPredictor(nn.Module):
@@ -71,9 +75,9 @@ class FNOEventPredictor(nn.Module):
     4. CNN decoder (event prediction)
     """
     
-    def __init__(self, modes: int = 8, fno_layers: int = 2, imu_hidden_dim: int = 128) -> None:
+    def __init__(self, modes: int = 4, fno_layers: int = 2, imu_hidden_dim: int = 128) -> None:
         super().__init__()
-        self.modes = modes  # Reduced from 16 to 8 for 2x speedup (minimal quality loss)
+        self.modes = modes
         self.imu_hidden_dim = imu_hidden_dim
         
         # Encoder (local features)
@@ -143,7 +147,7 @@ def test_fno() -> None:
     B, H, W = 2, 260, 346
     T = 50
     
-    model = FNOEventPredictor(modes=16, fno_layers=2, imu_hidden_dim=128)
+    model = FNOEventPredictor(fno_layers=2, imu_hidden_dim=128)  # uses default modes=4
     rgb = torch.randn(B, 1, H, W)
     imu = torch.randn(B, T, 6)
     
@@ -153,7 +157,7 @@ def test_fno() -> None:
     print(f"IMU Input: {imu.shape}")
     print(f"Output: {events.shape}")
     print(f"Output range: [{events.min():.4f}, {events.max():.4f}] (should be positive for Poisson)")
-    print(f"✅ FNO with IMU fusion test passed!")
+    print("✅ FNO with IMU fusion test passed!")
 
 
 if __name__ == "__main__":

@@ -2,10 +2,17 @@
 
 import pytest
 import torch
-import numpy as np
 
 
-@pytest.fixture(params=["cpu"], ids=["cpu"])
+def get_available_devices():
+    """Return list of available devices for testing."""
+    devices = ["cpu"]
+    if torch.cuda.is_available():
+        devices.append("cuda")
+    return devices
+
+
+@pytest.fixture(params=get_available_devices(), ids=lambda d: d)
 def device(request):
     """Tensor device for testing."""
     return torch.device(request.param)
@@ -58,8 +65,16 @@ def master_reference():
     """Master branch reference values for 64x64, 10 frames, cutoff=200Hz, leak=0.1."""
     return {
         "lp_vals": [
-            1.1982928514, 4.5538768768, 3.3053162098, 2.4699878693, 4.2341065407,
-            5.2574954033, 4.7004804611, 4.1271343231, 4.5951199532, 3.2776193619,
+            1.1982928514,
+            4.5538768768,
+            3.3053162098,
+            2.4699878693,
+            4.2341065407,
+            5.2574954033,
+            4.7004804611,
+            4.1271343231,
+            4.5951199532,
+            3.2776193619,
         ],
         "tolerance": 1e-6,
     }

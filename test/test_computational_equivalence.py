@@ -6,13 +6,17 @@ for all core functions, with parametrized edge cases.
 
 import pytest
 import torch
-import numpy as np
-from v2ecore.emulator_utils import (
-    low_pass_filter, low_pass_filter_inplace, compute_event_map,
-    lin_log, rescale_intensity_frame, subtract_leak_current,
-    generate_shot_noise, asm_events_cpu,
-)
 
+from v2ecore.emulator_utils import (
+    asm_events_cpu,
+    compute_event_map,
+    generate_shot_noise,
+    lin_log,
+    low_pass_filter,
+    low_pass_filter_inplace,
+    rescale_intensity_frame,
+    subtract_leak_current,
+)
 
 # --- lin_log tests ---
 

@@ -4,17 +4,15 @@ Author: Yuhuang Hu
 Email : yuhuang.hu@ini.uzh.ch
 """
 
-from __future__ import print_function, absolute_import
 
 import argparse
-import numpy as np
-import os
 import glob
-from skimage.io import imread
-
+import os
 from tempfile import TemporaryDirectory
 
-from v2e.renderer import VideoSequenceFiles2EventsRenderer, EventRenderer
+import numpy as np
+from skimage.io import imread
+from v2e.renderer import EventRenderer
 from v2e.slomo import SuperSloMo
 
 # define a parser
@@ -76,7 +74,7 @@ for vid_path in collectd_paths:
         os.makedirs(vid_out_path)
 
     # get all frames
-    file_list = sorted(glob.glob("{}".format(vid_path)+"/*.*"))
+    file_list = sorted(glob.glob(f"{vid_path}"+"/*.*"))
 
     frames = []
 
@@ -93,7 +91,7 @@ for vid_path in collectd_paths:
         frame = frame.astype(np.uint8)
 
         frames.append(frame)
-        print("Loading file {}".format(img_file))
+        print(f"Loading file {img_file}")
 
     frames = np.stack(frames)
     num_frames = frames.shape[0]
@@ -139,7 +137,7 @@ for vid_path in collectd_paths:
             args.neg_thres,
             os.path.join(
                 vid_out_path,
-                "interpolated_{:d}.avi".format(int(args.sf*fps))
+                f"interpolated_{int(args.sf*fps):d}.avi"
             )
         )
 

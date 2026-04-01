@@ -15,10 +15,10 @@ This script:
 4. Saves quantized checkpoint
 """
 
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict
 from prepare_data import (
     DATA_DIR,
     EVAL_SAMPLES,
@@ -207,8 +207,8 @@ def main() -> None:
     print(f"INT8 event_bpb: {bpb_int8:.6f}")
     if bpb_fp32 > 0:
         print(f"Accuracy loss: {(bpb_int8 - bpb_fp32) / bpb_fp32 * 100:.2f}%")
-    print(f"Expected size reduction: 2-3x")
-    print(f"Expected speedup: 2-3x (on x86 CPU with AVX512)")
+    print("Expected size reduction: 2-3x")
+    print("Expected speedup: 2-3x (on x86 CPU with AVX512)")
     print()
 
     # Save quantized model

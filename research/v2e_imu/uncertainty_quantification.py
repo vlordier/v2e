@@ -6,14 +6,15 @@ Usage:
     uv run python uncertainty_quantification.py
 """
 
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn as nn
-from pathlib import Path
-import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from train import EventPredictor, ModelConfig, BASE_CHANNELS, IMU_HIDDEN_DIM
+from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
 def enable_dropout(model):
@@ -93,7 +94,7 @@ def quantify_uncertainty():
     print("Running MC Dropout (10 samples)...")
     mean, variance, std = mc_dropout_uncertainty(model, rgb, imu, num_samples=10)
     
-    print(f"✅ Uncertainty estimated")
+    print("✅ Uncertainty estimated")
     print()
     
     # Print statistics
@@ -166,7 +167,7 @@ safe_events = events * (std < threshold).float()
     with open("uncertainty_results.json", "w") as f:
         json.dump(results, f, indent=2)
     
-    print(f"✅ Results saved to uncertainty_results.json")
+    print("✅ Results saved to uncertainty_results.json")
     
     return mean, variance, std
 

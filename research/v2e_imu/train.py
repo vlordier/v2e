@@ -43,7 +43,7 @@ class ModelConfig:
     image_size: tuple[int, int] = IMAGE_SIZE
     imu_seq_len: int = MAX_SEQ_LEN
     imu_hidden_dim: int = 128
-    rgb_channels: int = 1
+    rgb_channels: int = 2  # frame pair: (current, previous) stacked channel-wise
     base_channels: int = 32
     event_channels: int = 2  # positive and negative
 
@@ -112,16 +112,8 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
             nn.Linear(imu_dim * 2, imu_dim * 2),
         )
 
-        # Scale and bias for each resolution
-        self.film_params = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(imu_dim * 2, c),
-                    nn.Sigmoid(),  # scale in (0, 1)
-                )
-                for c in scales
-            ]
-        )
+        # Scale for each resolution (unconstrained — FiLM scale can amplify or suppress)
+        self.film_params = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in scales])
         self.film_bias = nn.ModuleList(
             [
                 nn.Sequential(
@@ -144,50 +136,6 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
             scale = scale_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
             bias = bias_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
             modulated.append(f * scale + bias)
-
-        return tuple(modulated)
-
-
-class AdaINFusion(nn.Module):  # type: ignore[misc]
-    """AdaIN-style fusion: normalize RGB, then modulate with IMU statistics."""
-
-    def __init__(self, base_channels: int, imu_dim: int = 128) -> None:
-        super().__init__()
-        self.base_channels = base_channels
-        # IMU predicts style statistics for each scale
-        scales = [base_channels, base_channels * 2, base_channels * 4]
-        total_params = sum(c * 2 for c in scales)  # gamma + beta for each
-
-        self.imu_to_style = nn.Sequential(
-            nn.Linear(imu_dim, imu_dim * 2),
-            nn.SiLU(),
-            nn.Linear(imu_dim * 2, total_params),
-        )
-        self.eps = 1e-5
-
-    def forward(
-        self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor], imu_features: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Get style parameters from IMU
-        style = self.imu_to_style(imu_features)
-
-        # Normalize each feature map, then apply IMU style
-        modulated = []
-        param_idx = 0
-
-        for f in features:
-            c = f.shape[1]
-            # Instance normalization
-            mean = f.mean(dim=(2, 3), keepdim=True)
-            std = f.std(dim=(2, 3), keepdim=True) + self.eps
-            f_norm = (f - mean) / std
-
-            # Get gamma and beta for this scale
-            gamma = style[:, param_idx : param_idx + c].view(f.shape[0], c, 1, 1)
-            beta = style[:, param_idx + c : param_idx + c * 2].view(f.shape[0], c, 1, 1)
-            param_idx += c * 2
-
-            modulated.append(f_norm * gamma + beta)
 
         return tuple(modulated)
 
@@ -255,11 +203,11 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
         log_rate = self.decoder(x_fused)  # Predict log(λ) for Poisson
         # Rate must be positive: λ = exp(log_rate)
         rate = torch.exp(log_rate)
-        
+
         # Interpolate to match output size
         if rate.shape[2:] != self.out_size:
-            rate = F.interpolate(rate, size=self.out_size, mode='bilinear', align_corners=False)
-        
+            rate = F.interpolate(rate, size=self.out_size, mode="bilinear", align_corners=False)
+
         return rate
 
 
@@ -298,13 +246,20 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         self.depth_head = DepthEstimationHead(in_channels=base, hidden_dim=64)
         self.event_head = EventPredictionHead(in_channels=base, out_size=config.image_size)
         self.out_size = config.image_size
-        
+
         # Learnable loss weights (uncertainty weighting)
         self.log_var_depth = nn.Parameter(torch.tensor(0.0))  # Learnable depth weight
 
+        # DINO projection head - maps encoder features to DINO feature space
+        self.dino_projection = nn.Sequential(
+            nn.Linear(base * 4, 512),  # Use x3_mod features (128 channels)
+            nn.GELU(),
+            nn.Linear(512, 384),  # Match DINO small output dimension
+        )
+
     def forward(
-        self, image: torch.Tensor, imu_seq: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self, image: torch.Tensor, imu_seq: torch.Tensor, return_dino_features: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         imu_features = self.imu_encoder(imu_seq)
         x1, x2, x3 = self.rgb_encoder(image)
         # Apply multi-scale FiLM
@@ -325,6 +280,15 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         depth = self.depth_head(d3)
         events = self.event_head(d3, depth)
 
+        # DINO feature projection (for auxiliary loss)
+        dino_features = None
+        if return_dino_features:
+            # Use the largest encoder features (x3_mod has base*4=128 channels)
+            global_features = x3_mod.mean(dim=(2, 3))  # (B, 128)
+            dino_features = self.dino_projection(global_features)  # (B, 384)
+
+        if return_dino_features:
+            return events, depth, dino_features
         return events, depth
 
 
@@ -466,44 +430,6 @@ def augment_batch(
     return images, imu_seq, gt_events
 
 
-def training_step(
-    model: EventPredictor,
-    optimizer: torch.optim.Optimizer,
-    batch: dict[str, torch.Tensor],
-    device: str,
-) -> float:
-    """Perform one training step with multi-task learning and event regularization."""
-    images = batch["image"].to(device)
-    imu_seq = batch["imu_seq"].to(device)
-    gt_events = batch["events"].to(device)
-
-    # Apply augmentation during training
-    if model.training:
-        images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
-
-    optimizer.zero_grad()
-    pred_events, pred_depth = model(images, imu_seq)
-
-    # Multi-task loss: events + depth regularization
-    event_loss = F.mse_loss(pred_events, gt_events)
-
-    # Depth regularization: encourage depth to correlate with motion magnitude
-    # (faster motion = closer objects typically)
-    imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)  # (B,)
-    depth_motion_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach())
-
-    # V5: REMOVED rate_penalty - it was fundamentally broken for large datasets
-    # The model should learn natural event statistics from data, not artificial penalties
-    # Combined loss with weighting
-    depth_weight = 0.1  # Auxiliary task weight
-    loss = event_loss + depth_weight * depth_motion_loss
-    # No rate_penalty!
-
-    loss.backward()
-    optimizer.step()
-    return float(loss.item())
-
-
 def print_progress(
     step: int, progress: float, loss: float, lrm: float, dt: float, remaining: float
 ) -> None:
@@ -524,15 +450,15 @@ def run_training_loop(
     optimizer: torch.optim.Optimizer,
     train_loader: DataLoader,
     device: str,
+    grad_accum_steps: int = 8,
 ) -> tuple[float, int]:
-    """Run the training loop with multi-task learning and mixed precision."""
+    """Run the training loop with multi-task learning."""
     total_training_time = 0.0
     step = 0
     smooth_train_loss = 0.0
-    grad_accum_steps = 2  # Gradient accumulation
 
-    # Mixed precision training (2x speedup on GPU)
-    scaler = torch.amp.GradScaler(device=device) if device != "cpu" else None
+    # Mixed precision training (CUDA only; MPS has limited fp16 support)
+    scaler = torch.amp.GradScaler(device="cuda") if device == "cuda" else None
 
     model.train()
     train_iter = iter(train_loader)
@@ -560,37 +486,77 @@ def run_training_loop(
                 dropout_mask = torch.rand_like(gt_events) > 0.15  # 15% dropout
                 gt_events = gt_events * dropout_mask / 0.85  # Scale to maintain E[gt]
 
-            # Mixed precision forward pass
-            with torch.amp.autocast(device_type=device if device != "mps" else "cpu"):
-                # Poisson event prediction: model predicts rate λ, not binary events
-                pred_rate, pred_depth = model(images, imu_seq)
+            # Forward pass
+            # Poisson event prediction: model predicts rate λ, not binary events
+            pred_rate, pred_depth = model(images, imu_seq)
 
-                # Poisson Negative Log-Likelihood (correct for count data!)
-                gt_counts = gt_events * 100.0
-                pred_counts = pred_rate * 100.0
-                poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
-                event_loss = poisson_nll.mean() / grad_accum_steps
-                
-                # Event rate regularization (prevents model from predicting λ≈0 everywhere)
-                # Encourage realistic event rate (~10% of pixels should be active)
-                pred_event_rate = (pred_rate > 0.3).float().mean()
-                target_event_rate = torch.tensor(0.1, device=pred_rate.device)  # Expect ~10% active pixels
-                rate_regularization = ((pred_event_rate - target_event_rate) ** 2) / grad_accum_steps
+            # Poisson Negative Log-Likelihood (correct for count data)
+            gt_counts = gt_events * 100.0
+            pred_counts = pred_rate * 100.0
+            poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
+            event_loss = poisson_nll.mean() / grad_accum_steps
 
-                # Depth-motion consistency (auxiliary) with adaptive weighting
-                imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
-                depth_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach()) / grad_accum_steps
+            # Event rate regularization (prevents model from predicting λ≈0 everywhere)
+            # Uses differentiable mean() — hard threshold (> 0.3) has zero gradient everywhere.
+            rate_regularization = (
+                F.mse_loss(
+                    pred_rate.mean().unsqueeze(0),
+                    torch.tensor([0.1], device=pred_rate.device),
+                )
+                / grad_accum_steps
+            )
 
-                # Uncertainty weighting (learnable depth weight)
-                depth_weight = torch.exp(-model.log_var_depth)
-                loss = event_loss + depth_weight * depth_loss + model.log_var_depth + 0.01 * rate_regularization
+            # Optical flow auxiliary loss: flow magnitude predicts event density
+            # High motion → more events
+            flow = batch.get("flow", None)
+            if flow is not None:
+                flow = flow.to(device)
+                # Flow magnitude (sqrt(flow_x^2 + flow_y^2))
+                flow_mag = torch.sqrt(flow[:, 0] ** 2 + flow[:, 1] ** 2)  # (B, H, W)
+                # Aggregate to image-level for comparison
+                flow_mag_agg = flow_mag.mean(dim=(1, 2))  # (B,)
+                pred_rate_agg = pred_rate.mean(dim=(1, 2, 3))  # (B,)
+                flow_loss = F.mse_loss(pred_rate_agg, flow_mag_agg * 10.0) / grad_accum_steps
+            else:
+                flow_loss = torch.tensor(0.0, device=device)
+
+            # DINO feature alignment (auxiliary) - extract in main process to avoid worker segfault
+            # Extract DINO features on-the-fly in training loop (not in DataLoader workers)
+            from prepare_data import extract_dino_batch, USE_DINO as DINO_ENABLED
+
+            if DINO_ENABLED:
+                # Extract DINO features for current batch (main process)
+                current_frame = images[:, 0:1, :, :]  # First channel = current frame
+                dino_features = extract_dino_batch(current_frame, device)
+                # Get model's DINO-projected features
+                _, _, model_dino = model(images, imu_seq, return_dino_features=True)
+                # Cosine similarity loss - maximize alignment with DINO features
+                dino_loss = 1 - F.cosine_similarity(model_dino, dino_features).mean()
+                dino_loss = dino_loss / grad_accum_steps
+            else:
+                dino_loss = torch.tensor(0.0, device=device)
+
+            # Depth-motion consistency (auxiliary)
+            imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
+            depth_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach()) / grad_accum_steps
+
+            # Uncertainty weighting (learnable depth weight)
+            depth_weight = torch.exp(-model.log_var_depth)
+            loss = (
+                event_loss
+                + depth_weight * depth_loss
+                + model.log_var_depth / grad_accum_steps
+                + 0.01 * rate_regularization
+                + 0.1 * flow_loss
+                + 0.05 * dino_loss
+            )
 
             # Backward pass with gradient scaling (mixed precision)
             if scaler:
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
-            
+
             accumulated_loss += loss.item()
 
         # Gradient clipping (prevents explosion, stabilizes training)
@@ -602,7 +568,7 @@ def run_training_loop(
             scaler.update()
         else:
             optimizer.step()
-        
+
         loss_val = accumulated_loss
 
         dt = time.time() - t0
@@ -614,15 +580,7 @@ def run_training_loop(
 
         progress = min(total_training_time / TIME_BUDGET, 1.0)
         lrm = get_lr_multiplier(progress)
-        
-        # LR warm-up for first 10% of training (stabilizes early training)
-        warmup_steps = 35  # ~10% of ~350 total steps
-        if step < warmup_steps:
-            warmup_lr = LEARNING_RATE * (step / warmup_steps)
-            lr = warmup_lr
-        else:
-            lr = LEARNING_RATE * lrm
-        
+        lr = LEARNING_RATE * lrm
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 
@@ -668,12 +626,6 @@ def print_results(
     print(f"imu_hidden_dim: {IMU_HIDDEN_DIM}")
 
 
-def cleanup_dataloader(loader: DataLoader) -> None:
-    """Properly cleanup dataloader workers to avoid multiprocessing warnings."""
-    # Just delete the loader - PyTorch handles cleanup automatically
-    del loader
-
-
 def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -705,22 +657,22 @@ def load_checkpoint(
     """Load model checkpoint."""
     checkpoint = torch.load(filepath, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint["model_state_dict"])
-    
+
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    
+
     epoch = checkpoint.get("epoch", 0)
     loss = checkpoint.get("loss", 0.0)
-    
+
     print(f"✅ Checkpoint loaded from: {filepath}")
     print(f"   Epoch: {epoch}, Loss: {loss:.6f}")
-    
+
     return model, optimizer, epoch, loss
 
 
 def train(resume_from: str | None = None) -> None:
     """Main training function.
-    
+
     Args:
         resume_from: Path to checkpoint to resume from (optional)
     """
@@ -743,13 +695,13 @@ def train(resume_from: str | None = None) -> None:
     # Resume from checkpoint if specified
     start_epoch = 0
     if resume_from and os.path.exists(resume_from):
-        model, optimizer, start_epoch, _ = load_checkpoint(
-            resume_from, model, optimizer, device
-        )
+        model, optimizer, start_epoch, _ = load_checkpoint(resume_from, model, optimizer, device)
         print(f"Resuming from epoch {start_epoch}")
 
     t_start = time.time()
-    total_training_time, num_steps = run_training_loop(model, optimizer, train_loader, device)
+    total_training_time, num_steps = run_training_loop(
+        model, optimizer, train_loader, device, grad_accum_steps
+    )
 
     t_train = time.time()
     print(f"Training completed in {t_train - t_start:.1f}s")
@@ -758,16 +710,14 @@ def train(resume_from: str | None = None) -> None:
     checkpoint_path = "3d_aware_model_checkpoint.pt"
     save_checkpoint(model, optimizer, num_steps, total_training_time, checkpoint_path)
 
-    # Cleanup train loader before evaluation
-    cleanup_dataloader(train_loader)
+    del train_loader
 
     print("Starting final eval...")
     eval_metrics = evaluate_combined_metric(model, val_loader, device, EVAL_SAMPLES)
     t_eval = time.time()
     print(f"Final eval completed in {t_eval - t_train:.1f}s")
 
-    # Cleanup val loader
-    cleanup_dataloader(val_loader)
+    del val_loader
 
     peak_vram_mb = get_peak_memory_mb()
     print_results(
