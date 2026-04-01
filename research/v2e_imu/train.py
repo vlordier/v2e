@@ -252,10 +252,10 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
         x_fused = torch.cat([x, depth_map], dim=1)
         x_fused = self.depth_fusion(x_fused)
         # Decode
-        events = self.decoder(x_fused)
-        if events.shape[2:] != self.out_size:
-            events = F.interpolate(events, size=self.out_size, mode="bilinear", align_corners=False)
-        return events
+        log_rate = self.decoder(x_fused)  # Predict log(λ) for Poisson
+        # Rate must be positive: λ = exp(log_rate)
+        rate = torch.exp(log_rate)
+        return rate
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
@@ -544,15 +544,24 @@ def run_training_loop(
 
             if model.training:
                 images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
-                
+
                 # Event dropout augmentation (prevents overfitting)
                 dropout_mask = torch.rand_like(gt_events) > 0.15  # 15% dropout
                 gt_events = gt_events * dropout_mask
 
-            pred_events, pred_depth = model(images, imu_seq)
+            # Poisson event prediction: model predicts rate λ, not binary events
+            pred_rate, pred_depth = model(images, imu_seq)
 
-            # Multi-task loss
-            event_loss = F.mse_loss(pred_events, gt_events) / grad_accum_steps
+            # Poisson Negative Log-Likelihood (correct for count data!)
+            # NLL = λ - k*log(λ) where k is ground truth count
+            # Un-normalize gt_events from [0,1] to counts [0, 100]
+            gt_counts = gt_events * 100.0
+            pred_counts = pred_rate * 100.0
+            
+            # Poisson NLL: -log P(k|λ) = λ - k*log(λ) + log(k!)
+            # We ignore log(k!) since it's constant w.r.t. predictions
+            poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
+            event_loss = poisson_nll.mean() / grad_accum_steps
 
             # Depth-motion consistency (auxiliary)
             imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)

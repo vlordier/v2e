@@ -346,8 +346,11 @@ def evaluate_event_bpb(
             imu_seq = batch["imu_seq"].to(device)
             gt_events = batch["events"].to(device)
 
-            pred_events = model(images, imu_seq)
-            loss = torch.nn.functional.mse_loss(pred_events, gt_events, reduction="sum")
+            # Model now predicts Poisson rate λ, convert back to [0,1] for comparison
+            pred_rate = model(images, imu_seq)
+            
+            # Use MSE for evaluation (consistent with V6 baseline)
+            loss = torch.nn.functional.mse_loss(pred_rate, gt_events, reduction="sum")
 
             batch_bytes = gt_events.numel()
             total_loss += loss.item()
