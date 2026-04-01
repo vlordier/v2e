@@ -298,6 +298,9 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         self.depth_head = DepthEstimationHead(in_channels=base, hidden_dim=64)
         self.event_head = EventPredictionHead(in_channels=base, out_size=config.image_size)
         self.out_size = config.image_size
+        
+        # Learnable loss weights (uncertainty weighting)
+        self.log_var_depth = nn.Parameter(torch.tensor(0.0))  # Learnable depth weight
 
     def forward(
         self, image: torch.Tensor, imu_seq: torch.Tensor
@@ -552,7 +555,7 @@ def run_training_loop(
 
                 # Event dropout augmentation (prevents overfitting)
                 dropout_mask = torch.rand_like(gt_events) > 0.15  # 15% dropout
-                gt_events = gt_events * dropout_mask
+                gt_events = gt_events * dropout_mask / 0.85  # Scale to maintain E[gt]
 
             # Poisson event prediction: model predicts rate λ, not binary events
             pred_rate, pred_depth = model(images, imu_seq)
@@ -568,11 +571,14 @@ def run_training_loop(
             poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
             event_loss = poisson_nll.mean() / grad_accum_steps
 
-            # Depth-motion consistency (auxiliary)
+            # Depth-motion consistency (auxiliary) with adaptive weighting
             imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
             depth_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach()) / grad_accum_steps
-
-            loss = event_loss + 0.1 * depth_loss
+            
+            # Uncertainty weighting (learnable depth weight)
+            depth_weight = torch.exp(-model.log_var_depth)
+            loss = event_loss + depth_weight * depth_loss + model.log_var_depth
+            
             loss.backward()
             accumulated_loss += loss.item()
 
