@@ -1,0 +1,11 @@
+{
+  "version": "Improved",
+  "model_params_M": 1.192692,
+  "inference_fps": 7.109655607580201,
+  "inference_latency_ms": 140.6537890434265,
+  "event_bpb": 2.6101926592152094e-07,
+  "event_mse": 1.8092476824532885e-07,
+  "event_rate_error": 324.1627960205078,
+  "depth_motion_error": 5.147221207618713,
+  "eval_time_s": 10.362144947052002
+}
