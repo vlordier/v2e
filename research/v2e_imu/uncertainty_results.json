@@ -1,8 +1,0 @@
-{
-  "prediction_mean": 0.00040190372965298593,
-  "prediction_std": 9.55091734866631e-12,
-  "variance_mean": 3.3235540449722244e-22,
-  "coefficient_of_variation": 2.296959245029484e-08,
-  "high_uncertainty_ratio": 1.0621387511491776,
-  "interpretation": "Low uncertainty"
-}
