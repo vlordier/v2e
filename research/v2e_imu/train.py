@@ -30,6 +30,20 @@ from prepare_data import (
 )
 from torch.utils.data import DataLoader
 
+
+def _gn(channels: int) -> nn.GroupNorm:
+    """GroupNorm with the largest power-of-2 group count ≤ 8 that divides channels.
+
+    Safe for any channel count — avoids GroupNorm(8, c) crashing when c % 8 != 0,
+    which would otherwise happen if the autoresearch agent tries BASE_CHANNELS not
+    divisible by 8 (e.g., 20, 12, 6).
+    """
+    for g in (8, 4, 2, 1):
+        if channels % g == 0:
+            return nn.GroupNorm(g, channels)
+    return nn.GroupNorm(1, channels)
+
+
 # ---------------------------------------------------------------------------
 # Model Architecture (EDIT THIS)
 # ---------------------------------------------------------------------------
@@ -81,17 +95,17 @@ class RGBEncoder(nn.Module):  # type: ignore[misc]
         super().__init__()
         self.layer1 = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1),
-            nn.GroupNorm(8, base_channels),
+            _gn(base_channels),
             nn.SiLU(inplace=True),
         )
         self.layer2 = nn.Sequential(
             nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1),
-            nn.GroupNorm(8, base_channels * 2),
+            _gn(base_channels * 2),
             nn.SiLU(inplace=True),
         )
         self.layer3 = nn.Sequential(
             nn.Conv2d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1),
-            nn.GroupNorm(8, base_channels * 4),
+            _gn(base_channels * 4),
             nn.SiLU(inplace=True),
         )
         self.out_channels = base_channels * 4
@@ -183,23 +197,23 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
         base = config.base_channels
         self.up1 = nn.Sequential(
             nn.ConvTranspose2d(base * 4, base * 2, 4, stride=2, padding=1),
-            nn.GroupNorm(8, base * 2),
+            _gn(base * 2),
             nn.SiLU(inplace=True),
         )
         self.up2 = nn.Sequential(
             nn.ConvTranspose2d(base * 4, base, 4, stride=2, padding=1),
-            nn.GroupNorm(8, base),
+            _gn(base),
             nn.SiLU(inplace=True),
         )
         self.up3 = nn.Sequential(
             nn.ConvTranspose2d(base * 2, base, 4, stride=2, padding=1),
-            nn.GroupNorm(8, base),
+            _gn(base),
             nn.SiLU(inplace=True),
         )
         self.event_head = EventPredictionHead(in_channels=base)
 
     def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = image.shape
+        _, _, H, W = image.shape
 
         # Pad to the nearest multiple of 8 so every stride-2 encoder layer
         # produces integer-sized feature maps that exactly match skip-connection
@@ -404,6 +418,7 @@ def _accumulate_step(
     device: str,
     scaler: torch.cuda.amp.GradScaler | None,
     grad_accum_steps: int,
+    rate_target: torch.Tensor,
 ) -> tuple[float, float, float]:
     """Run one micro-batch forward+backward; return (total, event, rate) losses."""
     images = batch["image"].to(device)
@@ -413,16 +428,18 @@ def _accumulate_step(
     if model.training:
         images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
 
-    pred_prob = model(images, imu_seq)
+    # autocast: fp16 on CUDA for ~2× throughput; no-op on MPS/CPU
+    autocast_type = "cuda" if device == "cuda" else "cpu"
+    with torch.amp.autocast(device_type=autocast_type, enabled=(device == "cuda")):
+        pred_prob = model(images, imu_seq)
 
     # Focal BCE — primary loss (~4.6% positive pixels, alpha=0.75 upweights events)
     event_loss = focal_bce_loss(pred_prob, gt_events) / grad_accum_steps
 
-    # Rate regularisation — keep mean prediction near 5% (measured event sparsity)
-    rate_reg = (
-        F.mse_loss(pred_prob.mean().unsqueeze(0), torch.tensor([0.05], device=device))
-        / grad_accum_steps
-    )
+    # Rate regularisation — per channel (ON, OFF separately) to avoid a model that
+    # puts all mass into one channel satisfying the combined-mean target.
+    per_ch_mean = pred_prob.mean(dim=(0, 2, 3))  # (2,) mean over B, H, W
+    rate_reg = F.mse_loss(per_ch_mean, rate_target) / grad_accum_steps
 
     loss = event_loss + 0.01 * rate_reg
 
@@ -447,6 +464,8 @@ def run_training_loop(
     smooth: dict[str, float] = {"total": 0.0, "evt": 0.0, "rate": 0.0}
 
     scaler = torch.amp.GradScaler(device="cuda") if device == "cuda" else None
+    # Pre-allocate rate target once to avoid per-step tensor creation
+    rate_target = torch.full((2,), 0.05, device=device)
     model.train()
     train_iter = iter(train_loader)
 
@@ -462,7 +481,9 @@ def run_training_loop(
                 train_iter = iter(train_loader)
                 batch = next(train_iter)
 
-            total, evt, rate = _accumulate_step(model, batch, device, scaler, grad_accum_steps)
+            total, evt, rate = _accumulate_step(
+                model, batch, device, scaler, grad_accum_steps, rate_target
+            )
             acc["total"] += total
             acc["evt"] += evt
             acc["rate"] += rate
@@ -555,8 +576,12 @@ def save_checkpoint(
         "epoch": epoch,
         "loss": loss,
         "config": {
+            "model_type": MODEL_TYPE,
             "base_channels": BASE_CHANNELS,
             "imu_hidden_dim": IMU_HIDDEN_DIM,
+            "fno_modes": FNO_MODES,
+            "fno_layers": FNO_LAYERS,
+            "fno_channels": FNO_CHANNELS,
         },
     }
     torch.save(checkpoint, filepath)
@@ -636,6 +661,11 @@ def train(resume_from: str | None = None) -> None:
         f"Physics baseline: F1={physics_metrics['f1']:.4f} "
         f"P={physics_metrics['precision']:.4f} R={physics_metrics['recall']:.4f}"
     )
+    if physics_metrics["f1"] < 0.01:
+        print(
+            "WARNING: physics baseline F1≈0 — image files may be missing. "
+            "Run: python download_fpv.py --sequence indoor_forward_3"
+        )
 
     eval_metrics = evaluate_combined_metric(model, val_loader, device, EVAL_SAMPLES)
     t_eval = time.time()
