@@ -763,8 +763,8 @@ def _image_ap(pred: np.ndarray, gt_bin: np.ndarray) -> float:
     fp = np.cumsum(1.0 - gt_s)
     precision = tp / (tp + fp + 1e-8)
     recall = tp / (n_pos + 1e-8)
-    # trapz over recall axis (monotone increasing)
-    return float(np.trapz(precision, recall))
+    # trapezoid over recall axis (monotone increasing); np.trapz removed in NumPy 2.0
+    return float(np.trapezoid(precision, recall))
 
 
 def evaluate_combined_metric(
