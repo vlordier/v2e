@@ -28,7 +28,7 @@ Once you get confirmation, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment runs on Apple Silicon. The training script runs for a **fixed time budget of 10 minutes** (wall clock training time). You launch it as: `python train.py`.
+Each experiment runs on Apple Silicon. The training script runs for a **fixed time budget of 15 minutes** (wall clock training time). You launch it as: `python train.py`.
 
 **What you CAN do:**
 - Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
@@ -36,10 +36,10 @@ Each experiment runs on Apple Silicon. The training script runs for a **fixed ti
 **What you CANNOT do:**
 - Modify `prepare_data.py`. It is read-only. It contains the fixed evaluation, data loading, and training constants (time budget, sequence length, etc).
 - Install new packages or add dependencies. You can only use what's already available.
-- Modify the evaluation harness. The `evaluate_event_bpb` function in `prepare_data.py` is the ground truth metric.
+- Modify the evaluation harness. The `evaluate_combined_metric` function in `prepare_data.py` is the ground truth metric.
 - **NEVER use `--no-verify` or skip pre-commit hooks.** All commits must pass pre-commit checks (ruff, mypy, format). If pre-commit fails, fix the code properly. Never alter `pyproject.toml` to cheat around linting rules. Quality code is non-negotiable.
 
-**The goal is simple: get the lowest event_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 10 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+**The goal is simple: get the highest val_ap.** Since the time budget is fixed, you don't need to worry about training time — it's always 15 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
 
 **Memory** is a soft constraint. MLX uses unified memory shared between CPU and GPU. Some increase is acceptable for meaningful event_bpb gains, but it should not blow up dramatically.
 
@@ -53,10 +53,15 @@ Once the script finishes it prints a summary like this:
 
 ```
 ---
-event_bpb: 0.123456
+val_ap: 0.3412
+f1_score: 0.2100
+f1_on: 0.2050
+f1_off: 0.2150
+precision: 0.2800
+recall: 0.1650
 event_mse: 0.045678
-training_seconds: 600.0
-total_seconds: 645.2
+training_seconds: 900.0
+total_seconds: 917.2
 peak_vram_mb: 4096.0
 samples_per_sec: 150.5
 num_steps: 1234
@@ -65,10 +70,10 @@ base_channels: 32
 imu_hidden_dim: 128
 ```
 
-Note that the script runs for a fixed 10-minute training budget. On Apple Silicon the throughput, step count, and absolute event_bpb will differ from other results — that's expected. Compare only against your own baseline on the same hardware.
+Note that the script runs for a fixed 15-minute training budget. On Apple Silicon the throughput, step count, and absolute val_ap will differ from other results — that's expected. Compare only against your own baseline on the same hardware.
 
 ```
-grep "^event_bpb:" run.log
+grep "^val_ap:\|^peak_vram_mb:" run.log
 ```
 
 ## Logging results
@@ -78,11 +83,11 @@ When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-se
 The TSV has a header row and 5 columns:
 
 ```
-commit	event_bpb	peak_memory_gb	status	description
+commit	val_ap	peak_memory_gb	status	description
 ```
 
 1. git commit hash (short, 7 chars)
-2. event_bpb achieved (e.g., 0.123456) — use 0.000000 for crashes
+2. val_ap achieved (e.g., 0.3412) — use 0.000000 for crashes
 3. peak memory in GB, round to .1f (e.g., 4.2 — divide peak_vram_mb by 1024) — use 0.0 for crashes
 4. status: `keep`, `discard`, or `crash`
 5. short text description of what this experiment tried
@@ -90,10 +95,10 @@ commit	event_bpb	peak_memory_gb	status	description
 Example:
 
 ```
-commit	event_bpb	peak_memory_gb	status	description
-abc1234	0.150000	4.2	keep	baseline
-def5678	0.145000	4.2	keep	increase base_channels to 48
-ghi9012	0.160000	4.2	discard	larger model, same time budget
+commit	val_ap	peak_memory_gb	status	description
+abc1234	0.2800	4.2	keep	baseline
+def5678	0.3100	4.2	keep	increase base_channels to 48
+ghi9012	0.2600	4.2	discard	larger model, same time budget
 ```
 
 ## The experiment loop
@@ -106,15 +111,15 @@ LOOP FOREVER:
 2. Tune `train.py` with an experimental idea by directly hacking the code.
 3. `git add research/v2e_imu/train.py && git commit -m "experiment: "` (never `git add -A` — this may be inside a larger repo)
 4. Run the experiment: `python train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^event_bpb:\|^peak_vram_mb:" run.log`
+5. Read out the results: `grep "^val_ap:\|^peak_vram_mb:" run.log`
 6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
 7. Record the results in the tsv
-8. If event_bpb improved (lower), `git add research/v2e_imu/results.tsv && git commit --amend --no-edit` to include the log, advancing the branch
-9. If event_bpb is equal or worse, record the discard commit hash, then `git reset --hard ` to discard it cleanly
+8. If val_ap improved (higher), `git add research/v2e_imu/results.tsv && git commit --amend --no-edit` to include the log, advancing the branch
+9. If val_ap is equal or worse, record the discard commit hash, then `git reset --hard ` to discard it cleanly
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
-**Timeout**: Each experiment should take ~12 minutes total (10 min training + ~1 min eval overhead on Apple Silicon). If a run exceeds 15 minutes, kill it and treat as a failure (discard and revert).
+**Timeout**: Each experiment should take ~17 minutes total (15 min training + ~2 min eval overhead on Apple Silicon). If a run exceeds 20 minutes, kill it and treat as a failure (discard and revert).
 
 **Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g., a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
 

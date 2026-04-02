@@ -160,7 +160,7 @@ except ImportError:
 MAX_SEQ_LEN = 50  # IMU sequence length
 IMAGE_SIZE = (260, 346)  # DAVIS346 resolution
 TIME_BUDGET = 900  # 15 minutes per experiment (increased for proper evaluation)
-EVAL_SAMPLES = 500  # Number of samples for evaluation
+EVAL_SAMPLES = 100  # Autoresearch: keep fast (~17s on MPS). Use 500+ for final eval.
 EVENT_WINDOW_MS = 33  # Event accumulation window (30 Hz)
 
 # Data directory
@@ -744,6 +744,29 @@ def make_dataloader(
     )
 
 
+def _image_ap(pred: np.ndarray, gt_bin: np.ndarray) -> float:
+    """Per-image Average Precision (area under the PR curve).
+
+    Args:
+        pred:   Flat float32 array of sigmoid predictions in [0, 1].
+        gt_bin: Flat bool array of ground-truth positives.
+
+    Returns:
+        AP in [0, 1], or nan if there are no positive GT pixels.
+    """
+    n_pos = gt_bin.sum()
+    if n_pos == 0:
+        return float("nan")
+    sorted_idx = np.argsort(-pred)
+    gt_s = gt_bin[sorted_idx].astype(np.float32)
+    tp = np.cumsum(gt_s)
+    fp = np.cumsum(1.0 - gt_s)
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (n_pos + 1e-8)
+    # trapz over recall axis (monotone increasing)
+    return float(np.trapz(precision, recall))
+
+
 def evaluate_combined_metric(
     model: torch.nn.Module,
     dataloader: DataLoader,
@@ -752,19 +775,21 @@ def evaluate_combined_metric(
     gt_threshold: float = 0.005,
     pred_threshold: float = 0.5,
 ) -> dict[str, float]:
-    """Evaluate model using F1 score as the primary metric.
+    """Evaluate model performance.
 
-    Two separate thresholds:
-    - gt_threshold=0.005: binarise GT (≥0.5 events/33ms after /100 normalisation)
-    - pred_threshold=0.5: standard sigmoid decision boundary for predictions
+    Primary metric — val_ap (Average Precision):
+      Threshold-free area under the PR curve. Higher = better.
+      Signal appears even when the model hasn't fully converged, making it
+      suitable as the autoresearch accept/revert signal.
 
-    Metrics:
-    - f1_score:   Binary F1 (primary — robust to class imbalance)
-    - precision:  Precision at pred_threshold
-    - recall:     Recall at pred_threshold
-    - f1_on:      F1 for ON events (channel 0) only
-    - f1_off:     F1 for OFF events (channel 1) only
-    - event_mse:  Mean squared error (secondary — kept for reference)
+    Secondary metrics:
+      f1_score / precision / recall at pred_threshold=0.5
+      f1_on / f1_off per polarity
+      event_mse  (L2 reference)
+
+    GT binarisation threshold: gt_threshold=0.005
+      (≥0.5 events per 33ms window after normalisation by max_events=100)
+    Prediction decision boundary: pred_threshold=0.5 (natural sigmoid midpoint)
     """
     model.eval()
 
@@ -774,6 +799,7 @@ def evaluate_combined_metric(
     total_mse = 0.0
     total_elements = 0
     total_samples = 0
+    ap_scores: list[float] = []
     start_time = time.time()
 
     with torch.no_grad():
@@ -788,7 +814,15 @@ def evaluate_combined_metric(
             output = model(images, imu_seq)
             pred_events = output[0] if isinstance(output, tuple) else output
 
-            # Separate thresholds: GT binarisation vs sigmoid decision boundary
+            # Average Precision — computed per image, then averaged
+            pred_np = pred_events.cpu().numpy().astype(np.float32)
+            gt_np = gt_events.cpu().numpy()
+            for b in range(pred_np.shape[0]):
+                ap = _image_ap(pred_np[b].ravel(), (gt_np[b].ravel() > gt_threshold))
+                if not np.isnan(ap):
+                    ap_scores.append(ap)
+
+            # F1 at fixed threshold (secondary)
             pred_bin = pred_events > pred_threshold
             gt_bin = gt_events > gt_threshold
 
@@ -796,29 +830,25 @@ def evaluate_combined_metric(
             total_fp += int((pred_bin & ~gt_bin).sum().item())
             total_fn += int((~pred_bin & gt_bin).sum().item())
 
-            # Per-polarity F1 (ON = channel 0, OFF = channel 1)
-            for ch, _on_off in enumerate(["on", "off"]):
-                pb = pred_bin[:, ch]
-                gb = gt_bin[:, ch]
-                if ch == 0:
-                    total_tp_on += int((pb & gb).sum().item())
-                    total_fp_on += int((pb & ~gb).sum().item())
-                    total_fn_on += int((~pb & gb).sum().item())
-                else:
-                    total_tp_off += int((pb & gb).sum().item())
-                    total_fp_off += int((pb & ~gb).sum().item())
-                    total_fn_off += int((~pb & gb).sum().item())
+            pb_on, gb_on = pred_bin[:, 0], gt_bin[:, 0]
+            total_tp_on += int((pb_on & gb_on).sum().item())
+            total_fp_on += int((pb_on & ~gb_on).sum().item())
+            total_fn_on += int((~pb_on & gb_on).sum().item())
+            pb_off, gb_off = pred_bin[:, 1], gt_bin[:, 1]
+            total_tp_off += int((pb_off & gb_off).sum().item())
+            total_fp_off += int((pb_off & ~gb_off).sum().item())
+            total_fn_off += int((~pb_off & gb_off).sum().item())
 
-            # MSE (secondary)
             total_mse += torch.nn.functional.mse_loss(
                 pred_events, gt_events, reduction="sum"
             ).item()
             total_elements += gt_events.numel()
-
             total_samples += images.shape[0]
 
     elapsed = time.time() - start_time
     samples_per_sec = total_samples / elapsed if elapsed > 0 else 0.0
+
+    val_ap = float(np.mean(ap_scores)) if ap_scores else 0.0
 
     def _f1(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
         p = tp / (tp + fp + 1e-8)
@@ -831,6 +861,7 @@ def evaluate_combined_metric(
     _, _, f1_off = _f1(total_tp_off, total_fp_off, total_fn_off)
 
     return {
+        "val_ap": val_ap,
         "f1_score": f1,
         "precision": precision,
         "recall": recall,

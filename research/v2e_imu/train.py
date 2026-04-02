@@ -13,10 +13,12 @@ import gc
 import os
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from fno_event_predictor import FNOEventPredictor
 from prepare_data import (
     DATA_DIR,
     EVAL_SAMPLES,
@@ -239,13 +241,17 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
 # Optimizer and Hyperparameters (EDIT THIS)
 # ---------------------------------------------------------------------------
 
-# Model architecture
-BASE_CHANNELS = 32  # Reduced for faster iteration with synthetic data
-IMU_HIDDEN_DIM = 128  # Reduced for faster iteration
+# Model selection: "unet" (default) or "fno"
+MODEL_TYPE = "unet"
 
-# Knowledge distillation (optional)
-USE_DISTILLATION = False  # Set to True to distill from Multimodal spatiotemporal teacher
-DISTILLATION_WEIGHT = 0.5  # Balance between task loss and distillation loss
+# UNet hyperparameters
+BASE_CHANNELS = 32
+IMU_HIDDEN_DIM = 128
+
+# FNO hyperparameters (only used when MODEL_TYPE="fno")
+FNO_MODES = 8  # Fourier modes per spatial dim
+FNO_LAYERS = 4  # Number of FNO+FiLM blocks
+FNO_CHANNELS = 128  # Feature channels in FNO trunk
 
 # Training
 TOTAL_BATCH_SIZE = 32
@@ -337,10 +343,18 @@ def setup_device() -> str:
     return "cpu"
 
 
-def create_model(device: str) -> tuple[EventPredictor, int]:
-    """Create model and return it with parameter count."""
-    config = ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM)
-    model = EventPredictor(config).to(device)
+def create_model(device: str) -> tuple[nn.Module, int]:
+    """Create model (UNet or FNO) and return it with parameter count."""
+    if MODEL_TYPE == "fno":
+        model: nn.Module = FNOEventPredictor(
+            modes=FNO_MODES,
+            fno_layers=FNO_LAYERS,
+            channels=FNO_CHANNELS,
+            imu_hidden_dim=IMU_HIDDEN_DIM,
+        ).to(device)
+    else:
+        config = ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM)
+        model = EventPredictor(config).to(device)
     num_params = sum(p.numel() for p in model.parameters())
     return model, num_params
 
@@ -407,8 +421,8 @@ def print_progress(
 
 
 def _accumulate_step(
-    model: EventPredictor,
-    batch: dict[str, torch.Tensor],
+    model: nn.Module,
+    batch: dict[str, Any],
     device: str,
     scaler: torch.cuda.amp.GradScaler | None,
     grad_accum_steps: int,
@@ -456,7 +470,7 @@ def _accumulate_step(
 
 
 def run_training_loop(
-    model: EventPredictor,
+    model: nn.Module,
     optimizer: torch.optim.Optimizer,
     train_loader: DataLoader,
     device: str,
@@ -543,14 +557,15 @@ def print_results(
 ) -> None:
     """Print final results."""
     print("---")
-    # Primary metric: F1 (robust to class imbalance, meaningful for sparse events)
-    print(f"f1_score:    {eval_metrics['f1_score']:.4f}")
-    print(f"f1_on:       {eval_metrics['f1_on']:.4f}")
-    print(f"f1_off:      {eval_metrics['f1_off']:.4f}")
-    print(f"precision:   {eval_metrics['precision']:.4f}")
-    print(f"recall:      {eval_metrics['recall']:.4f}")
-    # Secondary metric
-    print(f"event_mse:   {eval_metrics['event_mse']:.6f}")
+    # Primary metric: Average Precision (threshold-free, smooth signal for autoresearch)
+    print(f"val_ap: {eval_metrics['val_ap']:.4f}")
+    # Secondary metrics
+    print(f"f1_score: {eval_metrics['f1_score']:.4f}")
+    print(f"f1_on: {eval_metrics['f1_on']:.4f}")
+    print(f"f1_off: {eval_metrics['f1_off']:.4f}")
+    print(f"precision: {eval_metrics['precision']:.4f}")
+    print(f"recall: {eval_metrics['recall']:.4f}")
+    print(f"event_mse: {eval_metrics['event_mse']:.6f}")
     # Training stats
     print(f"training_seconds: {total_training_time:.1f}")
     print(f"total_seconds: {total_time:.1f}")
@@ -620,13 +635,11 @@ def train(resume_from: str | None = None) -> None:
     print(f"Model parameters: {num_params / 1e6:.2f}M")
 
     # Create dataloaders — val uses train IMU stats to avoid leakage
-    from prepare_data import FPVDataset
-
-    _train_ds = FPVDataset(DATA_DIR, split="train")
-    train_imu_stats = (_train_ds._imu_mean, _train_ds._imu_std)
-    del _train_ds
-
     train_loader = make_dataloader(DATA_DIR, "train", DEVICE_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
+    train_imu_stats = (
+        train_loader.dataset._imu_mean,
+        train_loader.dataset._imu_std,
+    )
     val_loader = make_dataloader(
         DATA_DIR,
         "val",

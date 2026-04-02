@@ -1,164 +1,153 @@
-#!/usr/bin/env python
 """
 Fourier Neural Operator for Event Prediction.
 
-Global receptive field via Fourier transform.
-O(n log n) complexity, resolution-invariant.
+Drop-in replacement for EventPredictor (UNet).  Select via MODEL_TYPE="fno" in train.py.
 
-Usage:
-    from fno_event_predictor import FNOEventPredictor
-    model = FNOEventPredictor()  # modes=4 default
+Architecture:
+  1. CNN encoder     — 2-channel frame pair  → local features (H/2, W/2)
+  2. IMU encoder     — bidirectional LSTM    → conditioning vector
+  3. FiLM + FNO loop — FiLM modulates each FNO layer; global frequency mixing
+  4. CNN decoder     — transposed conv       → (B, 2, H, W) sigmoid probs
+
+Advantages over UNet:
+  - Global receptive field via FFT (captures long-range motion patterns)
+  - O(N log N) complexity vs O(N²) for attention
+  - Resolution-invariant: same weights work at any spatial scale
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-class FourierLayer(nn.Module):
-    """Fourier neural operator layer (global mixing in frequency domain).
+class FourierLayer(nn.Module):  # type: ignore[misc]
+    """Fourier neural operator layer — global mixing in the frequency domain.
 
-    Uses separate learnable complex weights per frequency bin, which is the
-    core FNO design: each low-frequency mode gets its own (C_in → C_out) mixing.
+    Learns separate complex weights per low-frequency mode:
+        out_fft[m,n] = W[m,n] * x_fft[m,n]   for m,n < modes
+    All other frequency coefficients are zeroed (low-pass filter + learned mixing).
     """
 
-    def __init__(self, channels: int, modes: int = 16) -> None:
+    def __init__(self, channels: int, modes: int = 8) -> None:
         super().__init__()
         self.modes = modes
-        self.channels = channels
-
-        # Per-frequency complex weights stored as real/imag pairs: (C_out, C_in, modes, modes)
         scale = 1.0 / (channels * channels)
+        # (C_out, C_in, modes_h, modes_w) stored as real + imag separately
         self.weight_real = nn.Parameter(scale * torch.randn(channels, channels, modes, modes))
         self.weight_imag = nn.Parameter(scale * torch.randn(channels, channels, modes, modes))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: (B, C, H, W) spatial features
-        Returns:
-            x_out: (B, C, H, W) features after global frequency mixing
-        """
         B, C, H, W = x.shape
+        x_fft = torch.fft.rfft2(x)  # (B, C, H, W//2+1) complex
 
-        x_fft = torch.fft.rfft2(x)  # (B, C, H, W//2+1), complex
+        x_r = x_fft[:, :, : self.modes, : self.modes].real  # (B, C, m, m)
+        x_i = x_fft[:, :, : self.modes, : self.modes].imag
 
-        # Extract low-frequency block
-        x_r = x_fft[:, :, :self.modes, :self.modes].real  # (B, C_in, modes, modes)
-        x_i = x_fft[:, :, :self.modes, :self.modes].imag
-
-        # Complex multiply per frequency: out = W * x  (W = W_r + i*W_i)
-        # out_r = W_r @ x_r - W_i @ x_i
-        # out_i = W_r @ x_i + W_i @ x_r
-        out_r = (
-            torch.einsum("oimn,bimn->bomn", self.weight_real, x_r)
-            - torch.einsum("oimn,bimn->bomn", self.weight_imag, x_i)
+        # Complex matrix multiply: (W_r + iW_i)(x_r + ix_i)
+        out_r = torch.einsum("oimn,bimn->bomn", self.weight_real, x_r) - torch.einsum(
+            "oimn,bimn->bomn", self.weight_imag, x_i
         )
-        out_i = (
-            torch.einsum("oimn,bimn->bomn", self.weight_real, x_i)
-            + torch.einsum("oimn,bimn->bomn", self.weight_imag, x_r)
+        out_i = torch.einsum("oimn,bimn->bomn", self.weight_real, x_i) + torch.einsum(
+            "oimn,bimn->bomn", self.weight_imag, x_r
         )
 
-        # Embed back into full FFT buffer
         out_fft = torch.zeros_like(x_fft)
-        out_fft[:, :, :self.modes, :self.modes] = out_r + 1j * out_i
-
+        out_fft[:, :, : self.modes, : self.modes] = out_r + 1j * out_i
         return torch.fft.irfft2(out_fft, s=(H, W))
 
 
-class FNOEventPredictor(nn.Module):
-    """Fourier Neural Operator for event prediction.
-    
-    Architecture:
-    1. CNN encoder (local features)
-    2. IMU encoder + fusion
-    3. FNO layers (global mixing)
-    4. CNN decoder (event prediction)
+class FNOEventPredictor(nn.Module):  # type: ignore[misc]
+    """FNO-based RGB+IMU → ON/OFF event probability maps.
+
+    Same interface as EventPredictor:
+        forward(image: Tensor[B,2,H,W], imu_seq: Tensor[B,T,6]) → Tensor[B,2,H,W]
+    Output is sigmoid probabilities in [0, 1].
+
+    Args:
+        modes:          Number of Fourier modes to keep per spatial dim (default 8).
+        fno_layers:     Number of FNO + FiLM blocks (default 4).
+        channels:       Feature channels in FNO trunk (default 128).
+        imu_hidden_dim: IMU LSTM hidden size (default 128).
     """
-    
-    def __init__(self, modes: int = 4, fno_layers: int = 2, imu_hidden_dim: int = 128) -> None:
+
+    def __init__(
+        self,
+        modes: int = 8,
+        fno_layers: int = 4,
+        channels: int = 128,
+        imu_hidden_dim: int = 128,
+    ) -> None:
         super().__init__()
-        self.modes = modes
-        self.imu_hidden_dim = imu_hidden_dim
-        
-        # Encoder (local features)
+        self.out_size = (260, 346)  # DAVIS346 resolution — overridden at runtime
+
+        # ----- CNN encoder: 2-channel frame pair → spatial features -----
+        half = channels // 2
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 64, 3, padding=1),
-            nn.GroupNorm(8, 64),
+            nn.Conv2d(2, half, 3, padding=1),
+            nn.GroupNorm(8, half),
             nn.SiLU(inplace=True),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.GroupNorm(16, 128),
+            nn.Conv2d(half, channels, 3, stride=2, padding=1),
+            nn.GroupNorm(16, channels),
             nn.SiLU(inplace=True),
         )
-        
-        # IMU encoder (temporal features)
-        self.imu_encoder = nn.LSTM(6, imu_hidden_dim, batch_first=True)
-        self.imu_fusion = nn.Linear(imu_hidden_dim, 128)
-        
-        # FNO layers (global mixing)
-        self.fno_layers = nn.ModuleList([
-            FourierLayer(128, modes=modes)
-            for _ in range(fno_layers)
-        ])
-        
-        # Decoder (event prediction)
+
+        # ----- IMU encoder: bidirectional LSTM (matches UNet IMUEncoder) -----
+        self.imu_lstm = nn.LSTM(
+            6, imu_hidden_dim, num_layers=2, batch_first=True, bidirectional=True
+        )
+        self.imu_fc = nn.Linear(imu_hidden_dim * 2, imu_hidden_dim)
+        self.imu_norm = nn.LayerNorm(imu_hidden_dim)
+
+        # ----- FiLM scale/bias for each FNO block -----
+        # Scale initialised to identity (weight=0, bias=1): no IMU effect at step 0.
+        self.film_scale = nn.ModuleList(
+            [nn.Linear(imu_hidden_dim, channels) for _ in range(fno_layers)]
+        )
+        self.film_bias = nn.ModuleList(
+            [nn.Linear(imu_hidden_dim, channels) for _ in range(fno_layers)]
+        )
+        for linear in self.film_scale:
+            nn.init.zeros_(linear.weight)
+            nn.init.ones_(linear.bias)
+
+        # ----- FNO layers + GroupNorm -----
+        self.fno = nn.ModuleList([FourierLayer(channels, modes=modes) for _ in range(fno_layers)])
+        self.fno_norm = nn.ModuleList(
+            [nn.GroupNorm(min(8, channels), channels) for _ in range(fno_layers)]
+        )
+
+        # ----- CNN decoder: features → (B, 2, H, W) -----
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),
-            nn.GroupNorm(8, 64),
+            nn.ConvTranspose2d(channels, half, 4, stride=2, padding=1),
+            nn.GroupNorm(8, half),
             nn.SiLU(inplace=True),
-            nn.Conv2d(64, 2, 3, padding=1),
+            nn.Conv2d(half, 2, 3, padding=1),
         )
-        
-    def forward(self, rgb: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            rgb: (B, 1, H, W) grayscale images
-            imu_seq: (B, T, 6) IMU sequences (accelerometer + gyroscope)
-        Returns:
-            events: (B, 2, H, W) event rate prediction (positive, for Poisson)
-        """
-        B, _, H, W = rgb.shape
-        
-        # Encode RGB (local features)
-        x = self.encoder(rgb)  # (B, 128, H/2, W/2)
-        
-        # Encode IMU (temporal features)
-        _, (imu_hidden, _) = self.imu_encoder(imu_seq)  # imu_hidden: (1, B, 128)
-        imu_features = self.imu_fusion(imu_hidden[0])  # (B, 128)
-        
-        # Fuse IMU with RGB features (broadcast IMU to spatial dimensions)
-        imu_map = imu_features.view(B, -1, 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
-        x = x + imu_map  # Additive fusion (IMU modulates RGB features)
-        
-        # FNO global mixing (with residual connections)
-        for fno_layer in self.fno_layers:
-            x = x + fno_layer(x)
-        
-        # Decode to event rate
-        events = self.decoder(x)
-        
-        # Ensure positive rate (for Poisson likelihood)
-        events = torch.exp(events)
-        
-        return events
 
+    def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
+        B, _, H, W = image.shape
 
-def test_fno() -> None:
-    """Test FNO event predictor with IMU fusion."""
-    B, H, W = 2, 260, 346
-    T = 50
-    
-    model = FNOEventPredictor(fno_layers=2, imu_hidden_dim=128)  # uses default modes=4
-    rgb = torch.randn(B, 1, H, W)
-    imu = torch.randn(B, T, 6)
-    
-    events = model(rgb, imu)
-    
-    print(f"RGB Input: {rgb.shape}")
-    print(f"IMU Input: {imu.shape}")
-    print(f"Output: {events.shape}")
-    print(f"Output range: [{events.min():.4f}, {events.max():.4f}] (should be positive for Poisson)")
-    print("✅ FNO with IMU fusion test passed!")
+        # Encode image
+        x = self.encoder(image)  # (B, channels, H/2, W/2)
 
+        # Encode IMU — bidirectional: use last-layer forward+backward hidden states
+        _, (h_n, _) = self.imu_lstm(imu_seq)
+        imu_feat = self.imu_norm(
+            self.imu_fc(torch.cat([h_n[-2], h_n[-1]], dim=-1))
+        )  # (B, imu_hidden_dim)
 
-if __name__ == "__main__":
-    test_fno()
+        # FNO blocks with FiLM conditioning
+        for fno_layer, norm, scale_fn, bias_fn in zip(
+            self.fno, self.fno_norm, self.film_scale, self.film_bias, strict=True
+        ):
+            scale = scale_fn(imu_feat).view(B, -1, 1, 1)  # (B, C, 1, 1)
+            bias = bias_fn(imu_feat).view(B, -1, 1, 1)
+            # FiLM modulation + FNO residual + normalisation
+            x = norm(x * scale + bias + fno_layer(x))
+
+        # Decode to logits
+        logit = self.decoder(x)  # ≈ (B, 2, H, W) — may differ by 1px due to stride
+        if logit.shape[2:] != (H, W):
+            logit = F.interpolate(logit, size=(H, W), mode="bilinear", align_corners=False)
+
+        return torch.sigmoid(logit)

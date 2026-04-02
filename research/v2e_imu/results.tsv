@@ -1,3 +1,1 @@
-commit	event_bpb	peak_memory_gb	status	description
-a709f01	0.000000	0.0	crash	cross-attention fusion - numerical instability with focal loss
-9742015	0.000769	0.5	keep	gradient accumulation (effective batch=4)
+commit	val_ap	peak_memory_gb	status	description

@@ -9,12 +9,12 @@ import sys
 import unittest
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from fno_event_predictor import FNOEventPredictor
 from train import BASE_CHANNELS, IMU_HIDDEN_DIM, EventPredictor, ModelConfig
 
 
@@ -145,44 +145,33 @@ class TestGradientClipping(unittest.TestCase):
         self.assertLessEqual(total_norm, 1.0 + 1e-6)  # Small tolerance
 
 
-class TestDropoutScaling(unittest.TestCase):
-    """Test event dropout scaling."""
+class TestFNOEventPredictor(unittest.TestCase):
+    """Test FNO-based event predictor."""
 
-    def test_dropout_maintains_expected_value(self) -> None:
-        """Test dropout scaling maintains E[gt]."""
-        gt_events = torch.ones(2, 2, 10, 10)
-        dropout_rate = 0.15
+    def setUp(self) -> None:
+        self.model = FNOEventPredictor(modes=4, fno_layers=2, channels=32, imu_hidden_dim=32)
+        self.batch_size = 2
+        self.image_size = (260, 346)
 
-        # Apply dropout with scaling
-        dropout_mask = torch.rand_like(gt_events) > dropout_rate
-        gt_events_dropped = gt_events * dropout_mask / (1 - dropout_rate)
+    def test_forward_shape(self) -> None:
+        """FNO returns (B, 2, H, W) matching input spatial dims."""
+        rgb = torch.randn(self.batch_size, 2, *self.image_size)
+        imu = torch.randn(self.batch_size, 50, 6)
+        out = self.model(rgb, imu)
+        self.assertEqual(out.shape, (self.batch_size, 2, *self.image_size))
 
-        # Expected value should be maintained (approximately)
-        expected_original = gt_events.mean().item()
-        expected_dropped = gt_events_dropped.mean().item()
+    def test_output_in_01(self) -> None:
+        """FNO output is sigmoid probabilities in [0, 1]."""
+        rgb = torch.randn(self.batch_size, 2, *self.image_size)
+        imu = torch.randn(self.batch_size, 50, 6)
+        out = self.model(rgb, imu)
+        self.assertTrue((out >= 0).all())
+        self.assertTrue((out <= 1).all())
 
-        # Should be close (within statistical variance)
-        self.assertAlmostEqual(expected_original, expected_dropped, delta=0.1)
-
-
-class TestMultiScaleWindows(unittest.TestCase):
-    """Test multi-scale temporal windows."""
-
-    def test_multi_scale_produces_valid_output(self) -> None:
-        """Test multi-scale windows produce valid event maps."""
-        # This would require actual data, so we test the concept
-        windows_ms = [10, 33, 100]
-
-        # Simulate event maps at different scales
-        event_maps = [np.random.rand(260, 346).astype(np.float32) for _ in windows_ms]
-
-        # Average across scales
-        fused = np.mean(np.stack(event_maps), axis=0)
-
-        # Should be valid probabilities
-        self.assertTrue((fused >= 0).all())
-        self.assertTrue((fused <= 1).all())
-        self.assertEqual(fused.shape, (260, 346))
+    def test_param_count(self) -> None:
+        """FNO has learnable parameters."""
+        num_params = sum(p.numel() for p in self.model.parameters())
+        self.assertGreater(num_params, 10_000)
 
 
 class TestF1Metric(unittest.TestCase):
@@ -283,8 +272,7 @@ def run_tests() -> bool:
     suite.addTests(loader.loadTestsFromTestCase(TestFocalBCELoss))
     suite.addTests(loader.loadTestsFromTestCase(TestEventRateRegularization))
     suite.addTests(loader.loadTestsFromTestCase(TestGradientClipping))
-    suite.addTests(loader.loadTestsFromTestCase(TestDropoutScaling))
-    suite.addTests(loader.loadTestsFromTestCase(TestMultiScaleWindows))
+    suite.addTests(loader.loadTestsFromTestCase(TestFNOEventPredictor))
     suite.addTests(loader.loadTestsFromTestCase(TestF1Metric))
     suite.addTests(loader.loadTestsFromTestCase(TestModelCheckpoint))
     suite.addTests(loader.loadTestsFromTestCase(TestModelForwardShape))
