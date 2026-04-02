@@ -160,7 +160,7 @@ except ImportError:
 MAX_SEQ_LEN = 50  # IMU sequence length
 IMAGE_SIZE = (260, 346)  # DAVIS346 resolution
 TIME_BUDGET = 900  # 15 minutes per experiment (increased for proper evaluation)
-EVAL_SAMPLES = 100  # Autoresearch: keep fast (~17s on MPS). Use 500+ for final eval.
+EVAL_SAMPLES = 200  # Autoresearch: ~34s on MPS. Use 500+ for final eval.
 EVENT_WINDOW_MS = 33  # Event accumulation window (30 Hz)
 
 # Data directory
@@ -814,13 +814,16 @@ def evaluate_combined_metric(
             output = model(images, imu_seq)
             pred_events = output[0] if isinstance(output, tuple) else output
 
-            # Average Precision — computed per image, then averaged
+            # Average Precision — computed per image per channel, then averaged.
+            # Computing per-channel prevents ON and OFF events from competing in
+            # a single ranking (which would make the metric undefined).
             pred_np = pred_events.cpu().numpy().astype(np.float32)
             gt_np = gt_events.cpu().numpy()
             for b in range(pred_np.shape[0]):
-                ap = _image_ap(pred_np[b].ravel(), (gt_np[b].ravel() > gt_threshold))
-                if not np.isnan(ap):
-                    ap_scores.append(ap)
+                for ch in range(pred_np.shape[1]):  # ON, OFF
+                    ap = _image_ap(pred_np[b, ch].ravel(), (gt_np[b, ch].ravel() > gt_threshold))
+                    if not np.isnan(ap):
+                        ap_scores.append(ap)
 
             # F1 at fixed threshold (secondary)
             pred_bin = pred_events > pred_threshold

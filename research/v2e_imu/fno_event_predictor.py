@@ -78,8 +78,6 @@ class FNOEventPredictor(nn.Module):  # type: ignore[misc]
         imu_hidden_dim: int = 128,
     ) -> None:
         super().__init__()
-        self.out_size = (260, 346)  # DAVIS346 resolution — overridden at runtime
-
         # ----- CNN encoder: 2-channel frame pair → spatial features -----
         half = channels // 2
         self.encoder = nn.Sequential(

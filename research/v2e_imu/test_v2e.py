@@ -31,7 +31,7 @@ class TestEventPredictor(unittest.TestCase):
     def test_model_initialization(self) -> None:
         """Test model initializes correctly."""
         num_params = sum(p.numel() for p in self.model.parameters())
-        self.assertGreater(num_params, 1_000_000)  # at least 1M params
+        self.assertGreater(num_params, 500_000)  # at least 500K params
 
     def test_forward_pass(self) -> None:
         """Test forward pass produces correct output shape."""

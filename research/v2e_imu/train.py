@@ -9,7 +9,6 @@ Usage:
     python train.py  # If using pip instead of uv
 """
 
-import gc
 import os
 import time
 from dataclasses import dataclass
@@ -26,12 +25,10 @@ from prepare_data import (
     MAX_SEQ_LEN,
     TIME_BUDGET,
     evaluate_combined_metric,
+    evaluate_physics_baseline,
     make_dataloader,
 )
 from torch.utils.data import DataLoader
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 
 # ---------------------------------------------------------------------------
 # Model Architecture (EDIT THIS)
@@ -52,23 +49,29 @@ class ModelConfig:
 
 
 class IMUEncoder(nn.Module):  # type: ignore[misc]
-    """Encode IMU sequences into feature vectors."""
+    """Encode IMU sequences into feature vectors via attention-pooled bidirectional LSTM.
+
+    Uses the full LSTM output (all T timesteps) with a learned temporal attention
+    to produce a context vector.  This lets the model learn WHICH part of the IMU
+    window matters most: early timesteps → scene geometry; late timesteps → current
+    instantaneous motion.
+    """
 
     def __init__(self, input_dim: int = 6, hidden_dim: int = 128, num_layers: int = 2) -> None:
         super().__init__()
         self.lstm = nn.LSTM(
             input_dim, hidden_dim, num_layers=num_layers, batch_first=True, bidirectional=True
         )
+        # Temporal attention: score each timestep → soft-weighted average
+        self.attn = nn.Linear(hidden_dim * 2, 1)
         self.fc = nn.Linear(hidden_dim * 2, hidden_dim)
         self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, imu_seq: torch.Tensor) -> torch.Tensor:
-        lstm_out, (h_n, _) = self.lstm(imu_seq)
-        h_forward = h_n[-2]
-        h_backward = h_n[-1]
-        h_cat = torch.cat([h_forward, h_backward], dim=-1)
-        imu_features = self.fc(h_cat)
-        return self.norm(imu_features)
+        lstm_out, _ = self.lstm(imu_seq)  # (B, T, 2*H)
+        weights = torch.softmax(self.attn(lstm_out), dim=1)  # (B, T, 1)
+        context = (weights * lstm_out).sum(dim=1)  # (B, 2*H)
+        return self.norm(self.fc(context))
 
 
 class RGBEncoder(nn.Module):  # type: ignore[misc]
@@ -105,7 +108,6 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
 
     def __init__(self, base_channels: int, imu_dim: int = 128) -> None:
         super().__init__()
-        # FiLM parameters for each scale
         scales = [base_channels, base_channels * 2, base_channels * 4]
 
         # Shared IMU feature projection
@@ -115,32 +117,24 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
             nn.Linear(imu_dim * 2, imu_dim * 2),
         )
 
-        # FiLM scale and bias for each resolution.
-        # Scale initialized to 1 (identity) so features flow through at step 0.
-        # Kaiming default (scale≈0) causes near-zero activations early in training.
-        self.film_params = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in scales])
-        self.film_bias = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(imu_dim * 2, c),
-                    nn.Tanh(),  # bias in (-1, 1)
-                )
-                for c in scales
-            ]
-        )
-        for linear in self.film_params:
+        # FiLM scale: initialized to identity (weight=0, bias=1) so features
+        # flow through unchanged at step 0.
+        self.film_scale = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in scales])
+        for linear in self.film_scale:
             nn.init.zeros_(linear.weight)
             nn.init.ones_(linear.bias)
+
+        # FiLM bias: unconstrained — no Tanh, which would cap the shift at ±1
+        # regardless of activation scale and neuter the conditioning.
+        self.film_bias = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in scales])
 
     def forward(
         self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor], imu_features: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Project IMU features once
         imu_proj = self.imu_proj(imu_features)
 
-        # Apply FiLM at each scale
         modulated = []
-        for f, scale_fn, bias_fn in zip(features, self.film_params, self.film_bias, strict=True):
+        for f, scale_fn, bias_fn in zip(features, self.film_scale, self.film_bias, strict=True):
             scale = scale_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
             bias = bias_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
             modulated.append(f * scale + bias)
@@ -149,35 +143,23 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
 
 
 class EventPredictionHead(nn.Module):  # type: ignore[misc]
-    """Predict ON/OFF event probability maps from decoder features."""
+    """Predict ON/OFF event probability maps from full-resolution decoder features.
 
-    def __init__(self, in_channels: int, out_size: tuple[int, int]) -> None:
+    Takes feature maps already at the output spatial resolution (after U-Net decoding)
+    and applies a lightweight 2-layer conv projection.  No stride, no upsampling —
+    resolution management is done in EventPredictor.forward() via input padding.
+    """
+
+    def __init__(self, in_channels: int) -> None:
         super().__init__()
-        self.out_size = out_size
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(in_channels, 64, 4, stride=2, padding=1),
-            nn.GroupNorm(8, 64),
+        self.head = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, 3, padding=1),
             nn.SiLU(inplace=True),
-            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
-            nn.GroupNorm(8, 32),
-            nn.SiLU(inplace=True),
-            nn.ConvTranspose2d(32, 16, 4, stride=2, padding=1),
-            nn.GroupNorm(8, 16),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(16, 2, 3, padding=1),
+            nn.Conv2d(in_channels, 2, 1),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Logits → sigmoid probabilities in [0, 1]
-        logit = self.decoder(x)
-        prob = torch.sigmoid(logit)
-        if prob.shape[2:] != self.out_size:
-            # Interpolate logits before sigmoid for better gradient flow
-            logit_up = F.interpolate(
-                logit, size=self.out_size, mode="bilinear", align_corners=False
-            )
-            prob = torch.sigmoid(logit_up)
-        return prob
+        return torch.sigmoid(self.head(x))
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
@@ -214,27 +196,32 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
             nn.GroupNorm(8, base),
             nn.SiLU(inplace=True),
         )
-        self.event_head = EventPredictionHead(in_channels=base, out_size=config.image_size)
+        self.event_head = EventPredictionHead(in_channels=base)
 
     def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = image.shape
+
+        # Pad to the nearest multiple of 8 so every stride-2 encoder layer
+        # produces integer-sized feature maps that exactly match skip-connection
+        # sizes.  This eliminates all F.interpolate fallbacks in the decoder.
+        pad_h = (8 - H % 8) % 8
+        pad_w = (8 - W % 8) % 8
+        if pad_h or pad_w:
+            image = F.pad(image, (0, pad_w, 0, pad_h))
+
         x1, x2, x3 = self.rgb_encoder(image)
 
         if self.config.use_imu:
             imu_features = self.imu_encoder(imu_seq)
             x1, x2, x3 = self.fusion((x1, x2, x3), imu_features)
 
-        # U-Net decoder with skip connections
-        d1 = self.up1(x3)
-        if d1.shape[2:] != x2.shape[2:]:
-            d1 = F.interpolate(d1, size=x2.shape[2:], mode="bilinear", align_corners=False)
-        d1 = torch.cat([d1, x2], dim=1)
-        d2 = self.up2(d1)
-        if d2.shape[2:] != x1.shape[2:]:
-            d2 = F.interpolate(d2, size=x1.shape[2:], mode="bilinear", align_corners=False)
-        d2 = torch.cat([d2, x1], dim=1)
+        # U-Net decoder with skip connections — no F.interpolate needed with padding
+        d1 = torch.cat([self.up1(x3), x2], dim=1)
+        d2 = torch.cat([self.up2(d1), x1], dim=1)
         d3 = self.up3(d2)
 
-        return self.event_head(d3)
+        # Crop to original spatial dimensions and apply prediction head
+        return self.event_head(d3)[:, :, :H, :W]
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +244,7 @@ FNO_CHANNELS = 128  # Feature channels in FNO trunk
 TOTAL_BATCH_SIZE = 32
 DEVICE_BATCH_SIZE = 4
 LEARNING_RATE = 1e-3
-WEIGHT_DECAY = 0.0  # Experiment: no weight decay
+WEIGHT_DECAY = 0.0
 WARMUP_RATIO = 0.1
 WARMDOWN_RATIO = 0.3
 FINAL_LR_FRAC = 0.01
@@ -293,10 +280,8 @@ def focal_bce_loss(
     # Threshold GT to binary targets.
     # GT is normalized by max_events=100, so ≥0.5 events/33ms → GT ≈ 0.005.
     gt_bin = (gt > 0.005).float()
-    # Clamp predictions for numerical stability
     pred_c = pred.clamp(1e-6, 1.0 - 1e-6)
     bce = -(gt_bin * torch.log(pred_c) + (1.0 - gt_bin) * torch.log(1.0 - pred_c))
-    # p_t: model confidence in the correct class
     pt = gt_bin * pred_c + (1.0 - gt_bin) * (1.0 - pred_c)
     focal_weight = (1.0 - pt) ** gamma
     alpha_weight = gt_bin * alpha + (1.0 - gt_bin) * (1.0 - alpha)
@@ -331,7 +316,6 @@ def setup_device() -> str:
         print("CUDA GPU acceleration enabled")
         return "cuda"
     if torch.backends.mps.is_available():
-        # Enable MPS graph fallback for unsupported operations
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
         print("MPS GPU acceleration enabled")
         try:
@@ -379,18 +363,13 @@ def augment_batch(
     - Occlusion rectangles: sets pixels to 0 but does not zero GT events there.
     - Event label dropout: randomly mislabels positive pixels as background.
     """
-    # 1. Uniform brightness scaling: log(k*I_t) - log(k*I_{t-1}) = log(I_t/I_{t-1})
-    #    The k cancels exactly, so DVS events are unaffected.
     if torch.rand(1).item() > 0.5:
         brightness_factor = 0.7 + torch.rand(1).item() * 0.6  # 0.7–1.3
         images = (images * brightness_factor).clamp(0, 1)
 
-    # 2. Small Gaussian noise: std kept ≤ 0.02 so log-intensity perturbation
-    #    rarely exceeds the ~0.2 ln-unit DVS threshold.
     if torch.rand(1).item() > 0.5:
         images = (images + torch.randn_like(images) * 0.02).clamp(0, 1)
 
-    # 3. IMU noise: small fractional perturbation on already-normalized values.
     if torch.rand(1).item() > 0.5:
         imu_seq = imu_seq + torch.randn_like(imu_seq) * 0.02
 
@@ -403,7 +382,6 @@ def print_progress(
     loss: float,
     event_loss: float,
     rate_loss: float,
-    flow_loss: float,
     lrm: float,
     dt: float,
     remaining: float,
@@ -413,7 +391,7 @@ def print_progress(
     sps = int(TOTAL_BATCH_SIZE / dt) if dt > 0 else 0
     print(
         f"\rstep {step:05d} ({pct_done:.1f}%) | "
-        f"loss: {loss:.4f} evt: {event_loss:.4f} rate: {rate_loss:.4f} flow: {flow_loss:.4f} | "
+        f"loss: {loss:.4f} evt: {event_loss:.4f} rate: {rate_loss:.4f} | "
         f"lrm: {lrm:.2f} | dt: {dt * 1000:.0f}ms | sps: {sps} | rem: {remaining:.0f}s ",
         end="",
         flush=True,
@@ -426,8 +404,8 @@ def _accumulate_step(
     device: str,
     scaler: torch.cuda.amp.GradScaler | None,
     grad_accum_steps: int,
-) -> tuple[float, float, float, float]:
-    """Run one micro-batch forward+backward; return (total, event, rate, flow) losses."""
+) -> tuple[float, float, float]:
+    """Run one micro-batch forward+backward; return (total, event, rate) losses."""
     images = batch["image"].to(device)
     imu_seq = batch["imu_seq"].to(device)
     gt_events = batch["events"].to(device)
@@ -446,27 +424,14 @@ def _accumulate_step(
         / grad_accum_steps
     )
 
-    # Flow consistency — high-flow frames should predict more events globally
-    flow_tensor = batch.get("flow", None)
-    if flow_tensor is not None:
-        flow_tensor = flow_tensor.to(device)
-        flow_mag = torch.sqrt(flow_tensor[:, 0] ** 2 + flow_tensor[:, 1] ** 2)
-        FLOW_SCALE = 5.0
-        flow_mag_n = (flow_mag.mean(dim=(1, 2)) / FLOW_SCALE).clamp(0.0, 1.0)
-        flow_loss = (
-            F.mse_loss(pred_prob.mean(dim=(1, 2, 3)), flow_mag_n.detach()) / grad_accum_steps
-        )
-    else:
-        flow_loss = torch.tensor(0.0, device=device)
-
-    loss = event_loss + 0.01 * rate_reg + 0.1 * flow_loss
+    loss = event_loss + 0.01 * rate_reg
 
     if scaler:
         scaler.scale(loss).backward()
     else:
         loss.backward()
 
-    return loss.item(), event_loss.item(), rate_reg.item(), flow_loss.item()
+    return loss.item(), event_loss.item(), rate_reg.item()
 
 
 def run_training_loop(
@@ -479,7 +444,7 @@ def run_training_loop(
     """Run the training loop."""
     total_training_time = 0.0
     step = 0
-    smooth: dict[str, float] = {"total": 0.0, "evt": 0.0, "rate": 0.0, "flow": 0.0}
+    smooth: dict[str, float] = {"total": 0.0, "evt": 0.0, "rate": 0.0}
 
     scaler = torch.amp.GradScaler(device="cuda") if device == "cuda" else None
     model.train()
@@ -488,7 +453,7 @@ def run_training_loop(
     while True:
         t0 = time.time()
         optimizer.zero_grad()
-        acc = {"total": 0.0, "evt": 0.0, "rate": 0.0, "flow": 0.0}
+        acc = {"total": 0.0, "evt": 0.0, "rate": 0.0}
 
         for _ in range(grad_accum_steps):
             try:
@@ -497,13 +462,10 @@ def run_training_loop(
                 train_iter = iter(train_loader)
                 batch = next(train_iter)
 
-            total, evt, rate, flow = _accumulate_step(
-                model, batch, device, scaler, grad_accum_steps
-            )
+            total, evt, rate = _accumulate_step(model, batch, device, scaler, grad_accum_steps)
             acc["total"] += total
             acc["evt"] += evt
             acc["rate"] += rate
-            acc["flow"] += flow
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if scaler:
@@ -531,7 +493,6 @@ def run_training_loop(
             smooth["total"] / debias,
             smooth["evt"] / debias,
             smooth["rate"] / debias,
-            smooth["flow"] / debias,
             lrm,
             dt,
             max(0.0, TIME_BUDGET - total_training_time),
@@ -540,8 +501,6 @@ def run_training_loop(
         step += 1
         if total_training_time >= TIME_BUDGET:
             break
-        if step % 1000 == 0:
-            gc.collect()
 
     print()
     return total_training_time, step
@@ -554,6 +513,7 @@ def print_results(
     num_steps: int,
     num_params: int,
     peak_vram_mb: float,
+    physics_metrics: dict[str, float] | None = None,
 ) -> None:
     """Print final results."""
     print("---")
@@ -561,6 +521,10 @@ def print_results(
     print(f"val_ap: {eval_metrics['val_ap']:.4f}")
     # Secondary metrics
     print(f"f1_score: {eval_metrics['f1_score']:.4f}")
+    if physics_metrics is not None:
+        delta = eval_metrics["f1_score"] - physics_metrics["f1"]
+        sign = "+" if delta >= 0 else ""
+        print(f"physics_f1: {physics_metrics['f1']:.4f}  (model delta: {sign}{delta:.4f})")
     print(f"f1_on: {eval_metrics['f1_on']:.4f}")
     print(f"f1_off: {eval_metrics['f1_off']:.4f}")
     print(f"precision: {eval_metrics['precision']:.4f}")
@@ -596,7 +560,7 @@ def save_checkpoint(
         },
     }
     torch.save(checkpoint, filepath)
-    print(f"✅ Checkpoint saved to: {filepath}")
+    print(f"Checkpoint saved to: {filepath}")
 
 
 def load_checkpoint(
@@ -615,18 +579,12 @@ def load_checkpoint(
     epoch = checkpoint.get("epoch", 0)
     loss = checkpoint.get("loss", 0.0)
 
-    print(f"✅ Checkpoint loaded from: {filepath}")
-    print(f"   Epoch: {epoch}, Loss: {loss:.6f}")
-
+    print(f"Checkpoint loaded from: {filepath} (epoch {epoch}, loss {loss:.6f})")
     return model, optimizer, epoch, loss
 
 
 def train(resume_from: str | None = None) -> None:
-    """Main training function.
-
-    Args:
-        resume_from: Path to checkpoint to resume from (optional)
-    """
+    """Main training function."""
     device = setup_device()
     print(f"Device: {device}")
     print(f"Time budget: {TIME_BUDGET}s")
@@ -654,8 +612,6 @@ def train(resume_from: str | None = None) -> None:
     grad_accum_steps = TOTAL_BATCH_SIZE // DEVICE_BATCH_SIZE
     print(f"Gradient accumulation steps: {grad_accum_steps}")
 
-    # Resume from checkpoint if specified
-    start_epoch = 0
     if resume_from and os.path.exists(resume_from):
         model, optimizer, start_epoch, _ = load_checkpoint(resume_from, model, optimizer, device)
         print(f"Resuming from epoch {start_epoch}")
@@ -668,13 +624,19 @@ def train(resume_from: str | None = None) -> None:
     t_train = time.time()
     print(f"Training completed in {t_train - t_start:.1f}s")
 
-    # Save checkpoint
-    checkpoint_path = "3d_aware_model_checkpoint.pt"
-    save_checkpoint(model, optimizer, num_steps, total_training_time, checkpoint_path)
+    save_checkpoint(
+        model, optimizer, num_steps, total_training_time, "event_predictor_checkpoint.pt"
+    )
 
     del train_loader
 
     print("Starting final eval...")
+    physics_metrics = evaluate_physics_baseline(val_loader, device, EVAL_SAMPLES)
+    print(
+        f"Physics baseline: F1={physics_metrics['f1']:.4f} "
+        f"P={physics_metrics['precision']:.4f} R={physics_metrics['recall']:.4f}"
+    )
+
     eval_metrics = evaluate_combined_metric(model, val_loader, device, EVAL_SAMPLES)
     t_eval = time.time()
     print(f"Final eval completed in {t_eval - t_train:.1f}s")
@@ -683,7 +645,13 @@ def train(resume_from: str | None = None) -> None:
 
     peak_vram_mb = get_peak_memory_mb()
     print_results(
-        eval_metrics, total_training_time, t_eval - t_start, num_steps, num_params, peak_vram_mb
+        eval_metrics,
+        total_training_time,
+        t_eval - t_start,
+        num_steps,
+        num_params,
+        peak_vram_mb,
+        physics_metrics,
     )
 
 
