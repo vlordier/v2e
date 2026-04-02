@@ -1,1 +1,8 @@
 commit	val_ap	peak_memory_gb	status	description
+8b6db50	0.5734	0.0	baseline	UNet BASE_CHANNELS=32 IMU_HIDDEN=128 focal_bce alpha=0.75 rate_reg=0.01 AMP per-channel
+44f75f9	0.5619	0.0	discard	BASE_CHANNELS=48 LR=5e-4 (larger model + lower LR both hurt)
+613a43c	0.5682	0.0	discard	BASE_CHANNELS=48 LR=1e-3 (larger model slower to converge in 15min)
+9f72407	0.5718	0.0	discard	WEIGHT_DECAY=1e-4 (marginal, precision dropped)
+afd2068	0.5651	0.0	discard	focal gamma=3.0 (stronger suppression, no precision improvement)
+af37f9d	0.5720	0.0	discard	WARMUP=5% WARMDOWN=50% (closest so far, precision 0.497 vs 0.488)
+87e7a3a	0.5757	0.0	keep	TOTAL_BATCH_SIZE=16 (2x gradient updates, +0.0023 over baseline)
