@@ -9,3 +9,6 @@ af37f9d	0.5720	0.0	discard	WARMUP=5% WARMDOWN=50% (closest so far, precision 0.4
 4e07ef3	0.5742	0.0	discard	batch=16 + WARMUP=5% WARMDOWN=50% (didn't stack, worse than batch=16 alone)
 f25d0dc	0.5776	0.0	keep	TOTAL_BATCH_SIZE=8 (4x gradient updates, +0.0019 over batch=16)
 c5e423b	0.5865	0.0	keep	TOTAL_BATCH_SIZE=4 (no accum, max updates, +0.0089 over batch=8)
+baf3a14	0.5842	0.0	discard	TOTAL_BATCH_SIZE=2 (too noisy, batch=4 is sweet spot)
+30c443d	0.5555	0.0	discard	FNO model batch=4 (9.3M params, too slow to converge in 15min)
+9371855	0.5787	0.0	discard	batch=4 LR=3e-4 (lower LR hurt, LR=1e-3 is optimal)
