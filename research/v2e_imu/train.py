@@ -46,6 +46,7 @@ class ModelConfig:
     rgb_channels: int = 2  # frame pair: (current, previous) stacked channel-wise
     base_channels: int = 32
     event_channels: int = 2  # positive and negative
+    use_imu: bool = True  # set False for image-only ablation
 
 
 class IMUEncoder(nn.Module):  # type: ignore[misc]
@@ -112,7 +113,9 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
             nn.Linear(imu_dim * 2, imu_dim * 2),
         )
 
-        # Scale for each resolution (unconstrained — FiLM scale can amplify or suppress)
+        # FiLM scale and bias for each resolution.
+        # Scale initialized to 1 (identity) so features flow through at step 0.
+        # Kaiming default (scale≈0) causes near-zero activations early in training.
         self.film_params = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in scales])
         self.film_bias = nn.ModuleList(
             [
@@ -123,6 +126,9 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
                 for c in scales
             ]
         )
+        for linear in self.film_params:
+            nn.init.zeros_(linear.weight)
+            nn.init.ones_(linear.bias)
 
     def forward(
         self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor], imu_features: torch.Tensor
@@ -140,44 +146,12 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
         return tuple(modulated)
 
 
-class DepthEstimationHead(nn.Module):  # type: ignore[misc]
-    """Lightweight depth estimation from RGB+IMU features."""
-
-    def __init__(self, in_channels: int, hidden_dim: int = 64) -> None:
-        super().__init__()
-        # Global average pooling + MLP for scene-level depth
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-        self.depth_mlp = nn.Sequential(
-            nn.Linear(in_channels, hidden_dim),
-            nn.SiLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.SiLU(inplace=True),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Sigmoid(),  # Normalized depth [0, 1]
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, H, W)
-        B = x.shape[0]
-        # Global features
-        global_feat = self.global_pool(x).view(B, -1)
-        # Predict scene-level depth
-        depth = self.depth_mlp(global_feat)
-        return depth
-
-
 class EventPredictionHead(nn.Module):  # type: ignore[misc]
-    """Predict events from features with depth conditioning."""
+    """Predict ON/OFF event probability maps from decoder features."""
 
-    def __init__(self, in_channels: int, out_size: tuple[int, int], depth_dim: int = 16) -> None:
+    def __init__(self, in_channels: int, out_size: tuple[int, int]) -> None:
         super().__init__()
         self.out_size = out_size
-        # Fuse features with depth
-        self.depth_fusion = nn.Sequential(
-            nn.Conv2d(in_channels + 1, in_channels, 3, padding=1),
-            nn.GroupNorm(8, in_channels),
-            nn.SiLU(inplace=True),
-        )
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(in_channels, 64, 4, stride=2, padding=1),
             nn.GroupNorm(8, 64),
@@ -191,41 +165,37 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
             nn.Conv2d(16, 2, 3, padding=1),
         )
 
-    def forward(self, x: torch.Tensor, depth: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, H, W), depth: (B, 1)
-        B, C, H, W = x.shape
-        # Expand depth to match spatial dimensions
-        depth_map = depth.view(B, 1, 1, 1).expand(-1, -1, H, W)
-        # Fuse
-        x_fused = torch.cat([x, depth_map], dim=1)
-        x_fused = self.depth_fusion(x_fused)
-        # Decode
-        log_rate = self.decoder(x_fused)  # Predict log(λ) for Poisson
-        # Rate must be positive: λ = exp(log_rate)
-        rate = torch.exp(log_rate)
-
-        # Interpolate to match output size
-        if rate.shape[2:] != self.out_size:
-            rate = F.interpolate(rate, size=self.out_size, mode="bilinear", align_corners=False)
-
-        return rate
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Logits → sigmoid probabilities in [0, 1]
+        logit = self.decoder(x)
+        prob = torch.sigmoid(logit)
+        if prob.shape[2:] != self.out_size:
+            # Interpolate logits before sigmoid for better gradient flow
+            logit_up = F.interpolate(
+                logit, size=self.out_size, mode="bilinear", align_corners=False
+            )
+            prob = torch.sigmoid(logit_up)
+        return prob
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
-    """Multimodal spatiotemporal model: RGB + IMU -> Events + Depth (multi-task learning)."""
+    """RGB + IMU → ON/OFF event probability maps.
+
+    When config.use_imu=False the IMU encoder and FiLM fusion are bypassed
+    (image-only ablation): features pass straight from encoder to decoder.
+    """
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-        self.imu_encoder = IMUEncoder(input_dim=6, hidden_dim=config.imu_hidden_dim)
         self.rgb_encoder = RGBEncoder(
             in_channels=config.rgb_channels, base_channels=config.base_channels
         )
-        # Multi-scale FiLM modulation (applies at ALL encoder layers)
-        self.fusion = MultiScaleFiLM(
-            base_channels=config.base_channels, imu_dim=config.imu_hidden_dim
-        )
-        # Decoder with skip connections
+        if config.use_imu:
+            self.imu_encoder = IMUEncoder(input_dim=6, hidden_dim=config.imu_hidden_dim)
+            self.fusion = MultiScaleFiLM(
+                base_channels=config.base_channels, imu_dim=config.imu_hidden_dim
+            )
         base = config.base_channels
         self.up1 = nn.Sequential(
             nn.ConvTranspose2d(base * 4, base * 2, 4, stride=2, padding=1),
@@ -242,54 +212,27 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
             nn.GroupNorm(8, base),
             nn.SiLU(inplace=True),
         )
-        # Multimodal spatiotemporal heads
-        self.depth_head = DepthEstimationHead(in_channels=base, hidden_dim=64)
         self.event_head = EventPredictionHead(in_channels=base, out_size=config.image_size)
-        self.out_size = config.image_size
 
-        # Learnable loss weights (uncertainty weighting)
-        self.log_var_depth = nn.Parameter(torch.tensor(0.0))  # Learnable depth weight
-
-        # DINO projection head - maps encoder features to DINO feature space
-        self.dino_projection = nn.Sequential(
-            nn.Linear(base * 4, 512),  # Use x3_mod features (128 channels)
-            nn.GELU(),
-            nn.Linear(512, 384),  # Match DINO small output dimension
-        )
-
-    def forward(
-        self, image: torch.Tensor, imu_seq: torch.Tensor, return_dino_features: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        imu_features = self.imu_encoder(imu_seq)
+    def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
         x1, x2, x3 = self.rgb_encoder(image)
-        # Apply multi-scale FiLM
-        x1_mod, x2_mod, x3_mod = self.fusion((x1, x2, x3), imu_features)
 
-        # Decoder with skip connections using modulated features
-        d1 = self.up1(x3_mod)
-        if d1.shape[2:] != x2_mod.shape[2:]:
-            d1 = F.interpolate(d1, size=x2_mod.shape[2:], mode="bilinear", align_corners=False)
-        d1 = torch.cat([d1, x2_mod], dim=1)
+        if self.config.use_imu:
+            imu_features = self.imu_encoder(imu_seq)
+            x1, x2, x3 = self.fusion((x1, x2, x3), imu_features)
+
+        # U-Net decoder with skip connections
+        d1 = self.up1(x3)
+        if d1.shape[2:] != x2.shape[2:]:
+            d1 = F.interpolate(d1, size=x2.shape[2:], mode="bilinear", align_corners=False)
+        d1 = torch.cat([d1, x2], dim=1)
         d2 = self.up2(d1)
-        if d2.shape[2:] != x1_mod.shape[2:]:
-            d2 = F.interpolate(d2, size=x1_mod.shape[2:], mode="bilinear", align_corners=False)
-        d2 = torch.cat([d2, x1_mod], dim=1)
+        if d2.shape[2:] != x1.shape[2:]:
+            d2 = F.interpolate(d2, size=x1.shape[2:], mode="bilinear", align_corners=False)
+        d2 = torch.cat([d2, x1], dim=1)
         d3 = self.up3(d2)
 
-        # Multimodal spatiotemporal prediction: depth first, then depth-conditioned events
-        depth = self.depth_head(d3)
-        events = self.event_head(d3, depth)
-
-        # DINO feature projection (for auxiliary loss)
-        dino_features = None
-        if return_dino_features:
-            # Use the largest encoder features (x3_mod has base*4=128 channels)
-            global_features = x3_mod.mean(dim=(2, 3))  # (B, 128)
-            dino_features = self.dino_projection(global_features)  # (B, 384)
-
-        if return_dino_features:
-            return events, depth, dino_features
-        return events, depth
+        return self.event_head(d3)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +260,43 @@ FINAL_LR_FRAC = 0.01
 FINAL_EVAL_BATCH_SIZE = 16
 
 
+def focal_bce_loss(
+    pred: torch.Tensor,
+    gt: torch.Tensor,
+    gamma: float = 2.0,
+    alpha: float = 0.75,
+) -> torch.Tensor:
+    """Focal BCE loss for sparse event prediction.
+
+    Handles class imbalance (~4.6% positive pixels) by down-weighting easy
+    negatives via the (1-pt)^gamma factor.  Alpha up-weights the rare positive
+    (event) class.
+
+    Alpha convention: alpha is the weight on POSITIVES.
+      alpha > 0.5  → upweight positives (correct for positive-rare tasks)
+      alpha = 0.75 → positives:negatives = 0.75:0.25 = 3:1 per-pixel weight
+      With 4.6% positives: effective ratio = 0.046*0.75 : 0.954*0.25 = 0.126:0.124 ≈ 1:1
+      This roughly equalises positive/negative gradient contributions.
+
+    Args:
+        pred:  Predicted probabilities (B, 2, H, W) in [0, 1].
+        gt:    Ground-truth event maps  (B, 2, H, W) in [0, 1].
+        gamma: Focusing parameter (2.0 is standard from RetinaNet).
+        alpha: Weight for positive class (must be > 0.5 for positive-rare tasks).
+    """
+    # Threshold GT to binary targets.
+    # GT is normalized by max_events=100, so ≥0.5 events/33ms → GT ≈ 0.005.
+    gt_bin = (gt > 0.005).float()
+    # Clamp predictions for numerical stability
+    pred_c = pred.clamp(1e-6, 1.0 - 1e-6)
+    bce = -(gt_bin * torch.log(pred_c) + (1.0 - gt_bin) * torch.log(1.0 - pred_c))
+    # p_t: model confidence in the correct class
+    pt = gt_bin * pred_c + (1.0 - gt_bin) * (1.0 - pred_c)
+    focal_weight = (1.0 - pt) ** gamma
+    alpha_weight = gt_bin * alpha + (1.0 - gt_bin) * (1.0 - alpha)
+    return (alpha_weight * focal_weight * bce).mean()
+
+
 def get_lr_multiplier(progress: float) -> float:
     """Learning rate schedule with warmup and cooldown."""
     if progress < WARMUP_RATIO:
@@ -340,20 +320,19 @@ def get_peak_memory_mb() -> float:
 
 
 def setup_device() -> str:
-    """Setup and return the device with optimal settings."""
+    """Setup and return the device with optimal settings (CUDA > MPS > CPU)."""
+    if torch.cuda.is_available():
+        print("CUDA GPU acceleration enabled")
+        return "cuda"
     if torch.backends.mps.is_available():
         # Enable MPS graph fallback for unsupported operations
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
         print("MPS GPU acceleration enabled")
-        # Pre-allocate MPS memory for better performance
         try:
             torch.mps.empty_cache()
         except Exception:
             pass
         return "mps"
-    if torch.cuda.is_available():
-        print("CUDA GPU acceleration enabled")
-        return "cuda"
     print("WARNING: No GPU available, using CPU (slow)")
     return "cpu"
 
@@ -371,78 +350,109 @@ def augment_batch(
     imu_seq: torch.Tensor,
     gt_events: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Apply RGB-only data augmentation (no geometric transforms).
+    """Physics-consistent augmentation for event prediction.
 
-    Augmentations:
-    - Gaussian noise
-    - Brightness jitter
-    - Contrast jitter
-    - Random occlusions (dropout rectangles)
-    - IMU noise
+    Only transforms that do NOT change which events the DVS would fire are
+    applied.  Specifically:
+    - Uniform brightness scaling cancels in log(I_t) - log(I_{t-1}), so events
+      are unchanged (valid).
+    - Gaussian noise (small) slightly perturbs log-intensities but rarely crosses
+      the ~0.2 ln-unit threshold; kept for regularization.
+    - IMU noise: small additive perturbation on normalized IMU.
 
-    Note: No geometric transforms (flip/rotate) to avoid modifying event labels.
+    Excluded (physics-inconsistent, corrupt GT labels):
+    - Contrast jitter: changes I_t/I_{t-1} → changes which events fire.
+    - Occlusion rectangles: sets pixels to 0 but does not zero GT events there.
+    - Event label dropout: randomly mislabels positive pixels as background.
     """
-    B, C, H, W = images.shape
-
-    # 1. Gaussian noise (additive)
+    # 1. Uniform brightness scaling: log(k*I_t) - log(k*I_{t-1}) = log(I_t/I_{t-1})
+    #    The k cancels exactly, so DVS events are unaffected.
     if torch.rand(1).item() > 0.5:
-        noise_std = torch.rand(1).item() * 0.1  # 0 to 0.1 std
-        images = images + torch.randn_like(images) * noise_std
-        images = images.clamp(0, 1)
+        brightness_factor = 0.7 + torch.rand(1).item() * 0.6  # 0.7–1.3
+        images = (images * brightness_factor).clamp(0, 1)
 
-    # 2. Brightness jitter (multiply by factor)
+    # 2. Small Gaussian noise: std kept ≤ 0.02 so log-intensity perturbation
+    #    rarely exceeds the ~0.2 ln-unit DVS threshold.
     if torch.rand(1).item() > 0.5:
-        brightness_factor = 0.7 + torch.rand(1).item() * 0.6  # 0.7 to 1.3
-        images = images * brightness_factor
-        images = images.clamp(0, 1)
+        images = (images + torch.randn_like(images) * 0.02).clamp(0, 1)
 
-    # 3. Contrast jitter (scale around mean)
+    # 3. IMU noise: small fractional perturbation on already-normalized values.
     if torch.rand(1).item() > 0.5:
-        contrast_factor = 0.7 + torch.rand(1).item() * 0.6  # 0.7 to 1.3
-        mean = images.mean(dim=(1, 2, 3), keepdim=True)
-        images = (images - mean) * contrast_factor + mean
-        images = images.clamp(0, 1)
-
-    # 4. Random occlusions (rectangle dropout)
-    if torch.rand(1).item() > 0.5:
-        # Number of occlusions
-        num_occlusions = torch.randint(1, 4, (1,)).item()
-        for _ in range(num_occlusions):
-            # Random occlusion size (5% to 20% of image)
-            occ_h = int(H * (0.05 + torch.rand(1).item() * 0.15))
-            occ_w = int(W * (0.05 + torch.rand(1).item() * 0.15))
-
-            # Random position
-            y = torch.randint(0, H - occ_h, (1,)).item()
-            x = torch.randint(0, W - occ_w, (1,)).item()
-
-            # Apply occlusion (set to 0 or random value)
-            if torch.rand(1).item() > 0.5:
-                images[:, :, y : y + occ_h, x : x + occ_w] = 0  # Black occlusion
-            else:
-                images[:, :, y : y + occ_h, x : x + occ_w] = torch.rand(1).item()  # Random gray
-
-    # 5. IMU noise
-    if torch.rand(1).item() > 0.5:
-        noise = torch.randn_like(imu_seq) * 0.01
-        imu_seq = imu_seq + noise
+        imu_seq = imu_seq + torch.randn_like(imu_seq) * 0.02
 
     return images, imu_seq, gt_events
 
 
 def print_progress(
-    step: int, progress: float, loss: float, lrm: float, dt: float, remaining: float
+    step: int,
+    progress: float,
+    loss: float,
+    event_loss: float,
+    rate_loss: float,
+    flow_loss: float,
+    lrm: float,
+    dt: float,
+    remaining: float,
 ) -> None:
-    """Print training progress."""
+    """Print training progress with per-component loss breakdown."""
     pct_done = 100 * progress
-    tok_per_sec = int(TOTAL_BATCH_SIZE / dt) if dt > 0 else 0
+    sps = int(TOTAL_BATCH_SIZE / dt) if dt > 0 else 0
     print(
-        f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {loss:.6f} | "
-        f"lrm: {lrm:.2f} | dt: {dt * 1000:.0f}ms | tok/sec: {tok_per_sec:,} | "
-        f"remaining: {remaining:.0f}s ",
+        f"\rstep {step:05d} ({pct_done:.1f}%) | "
+        f"loss: {loss:.4f} evt: {event_loss:.4f} rate: {rate_loss:.4f} flow: {flow_loss:.4f} | "
+        f"lrm: {lrm:.2f} | dt: {dt * 1000:.0f}ms | sps: {sps} | rem: {remaining:.0f}s ",
         end="",
         flush=True,
     )
+
+
+def _accumulate_step(
+    model: EventPredictor,
+    batch: dict[str, torch.Tensor],
+    device: str,
+    scaler: torch.cuda.amp.GradScaler | None,
+    grad_accum_steps: int,
+) -> tuple[float, float, float, float]:
+    """Run one micro-batch forward+backward; return (total, event, rate, flow) losses."""
+    images = batch["image"].to(device)
+    imu_seq = batch["imu_seq"].to(device)
+    gt_events = batch["events"].to(device)
+
+    if model.training:
+        images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
+
+    pred_prob = model(images, imu_seq)
+
+    # Focal BCE — primary loss (~4.6% positive pixels, alpha=0.75 upweights events)
+    event_loss = focal_bce_loss(pred_prob, gt_events) / grad_accum_steps
+
+    # Rate regularisation — keep mean prediction near 5% (measured event sparsity)
+    rate_reg = (
+        F.mse_loss(pred_prob.mean().unsqueeze(0), torch.tensor([0.05], device=device))
+        / grad_accum_steps
+    )
+
+    # Flow consistency — high-flow frames should predict more events globally
+    flow_tensor = batch.get("flow", None)
+    if flow_tensor is not None:
+        flow_tensor = flow_tensor.to(device)
+        flow_mag = torch.sqrt(flow_tensor[:, 0] ** 2 + flow_tensor[:, 1] ** 2)
+        FLOW_SCALE = 5.0
+        flow_mag_n = (flow_mag.mean(dim=(1, 2)) / FLOW_SCALE).clamp(0.0, 1.0)
+        flow_loss = (
+            F.mse_loss(pred_prob.mean(dim=(1, 2, 3)), flow_mag_n.detach()) / grad_accum_steps
+        )
+    else:
+        flow_loss = torch.tensor(0.0, device=device)
+
+    loss = event_loss + 0.01 * rate_reg + 0.1 * flow_loss
+
+    if scaler:
+        scaler.scale(loss).backward()
+    else:
+        loss.backward()
+
+    return loss.item(), event_loss.item(), rate_reg.item(), flow_loss.item()
 
 
 def run_training_loop(
@@ -452,21 +462,19 @@ def run_training_loop(
     device: str,
     grad_accum_steps: int = 8,
 ) -> tuple[float, int]:
-    """Run the training loop with multi-task learning."""
+    """Run the training loop."""
     total_training_time = 0.0
     step = 0
-    smooth_train_loss = 0.0
+    smooth: dict[str, float] = {"total": 0.0, "evt": 0.0, "rate": 0.0, "flow": 0.0}
 
-    # Mixed precision training (CUDA only; MPS has limited fp16 support)
     scaler = torch.amp.GradScaler(device="cuda") if device == "cuda" else None
-
     model.train()
     train_iter = iter(train_loader)
 
     while True:
         t0 = time.time()
         optimizer.zero_grad()
-        accumulated_loss = 0.0
+        acc = {"total": 0.0, "evt": 0.0, "rate": 0.0, "flow": 0.0}
 
         for _ in range(grad_accum_steps):
             try:
@@ -475,123 +483,49 @@ def run_training_loop(
                 train_iter = iter(train_loader)
                 batch = next(train_iter)
 
-            images = batch["image"].to(device)
-            imu_seq = batch["imu_seq"].to(device)
-            gt_events = batch["events"].to(device)
-
-            if model.training:
-                images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
-
-                # Event dropout augmentation (prevents overfitting)
-                dropout_mask = torch.rand_like(gt_events) > 0.15  # 15% dropout
-                gt_events = gt_events * dropout_mask / 0.85  # Scale to maintain E[gt]
-
-            # Forward pass
-            # Poisson event prediction: model predicts rate λ, not binary events
-            pred_rate, pred_depth = model(images, imu_seq)
-
-            # Poisson Negative Log-Likelihood (correct for count data)
-            gt_counts = gt_events * 100.0
-            pred_counts = pred_rate * 100.0
-            poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
-            event_loss = poisson_nll.mean() / grad_accum_steps
-
-            # Event rate regularization (prevents model from predicting λ≈0 everywhere)
-            # Uses differentiable mean() — hard threshold (> 0.3) has zero gradient everywhere.
-            rate_regularization = (
-                F.mse_loss(
-                    pred_rate.mean().unsqueeze(0),
-                    torch.tensor([0.1], device=pred_rate.device),
-                )
-                / grad_accum_steps
+            total, evt, rate, flow = _accumulate_step(
+                model, batch, device, scaler, grad_accum_steps
             )
+            acc["total"] += total
+            acc["evt"] += evt
+            acc["rate"] += rate
+            acc["flow"] += flow
 
-            # Optical flow auxiliary loss: flow magnitude predicts event density
-            # High motion → more events
-            flow = batch.get("flow", None)
-            if flow is not None:
-                flow = flow.to(device)
-                # Flow magnitude (sqrt(flow_x^2 + flow_y^2))
-                flow_mag = torch.sqrt(flow[:, 0] ** 2 + flow[:, 1] ** 2)  # (B, H, W)
-                # Aggregate to image-level for comparison
-                flow_mag_agg = flow_mag.mean(dim=(1, 2))  # (B,)
-                pred_rate_agg = pred_rate.mean(dim=(1, 2, 3))  # (B,)
-                flow_loss = F.mse_loss(pred_rate_agg, flow_mag_agg * 10.0) / grad_accum_steps
-            else:
-                flow_loss = torch.tensor(0.0, device=device)
-
-            # DINO feature alignment (auxiliary) - extract in main process to avoid worker segfault
-            # Extract DINO features on-the-fly in training loop (not in DataLoader workers)
-            from prepare_data import extract_dino_batch, USE_DINO as DINO_ENABLED
-
-            if DINO_ENABLED:
-                # Extract DINO features for current batch (main process)
-                current_frame = images[:, 0:1, :, :]  # First channel = current frame
-                dino_features = extract_dino_batch(current_frame, device)
-                # Get model's DINO-projected features
-                _, _, model_dino = model(images, imu_seq, return_dino_features=True)
-                # Cosine similarity loss - maximize alignment with DINO features
-                dino_loss = 1 - F.cosine_similarity(model_dino, dino_features).mean()
-                dino_loss = dino_loss / grad_accum_steps
-            else:
-                dino_loss = torch.tensor(0.0, device=device)
-
-            # Depth-motion consistency (auxiliary)
-            imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
-            depth_loss = F.mse_loss(pred_depth.squeeze(1), imu_motion.detach()) / grad_accum_steps
-
-            # Uncertainty weighting (learnable depth weight)
-            depth_weight = torch.exp(-model.log_var_depth)
-            loss = (
-                event_loss
-                + depth_weight * depth_loss
-                + model.log_var_depth / grad_accum_steps
-                + 0.02 * rate_regularization
-                + 0.1 * flow_loss
-                + 0.05 * dino_loss
-            )
-
-            # Backward pass with gradient scaling (mixed precision)
-            if scaler:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
-
-            accumulated_loss += loss.item()
-
-        # Gradient clipping (prevents explosion, stabilizes training)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-        # Optimizer step with gradient scaling (mixed precision)
         if scaler:
             scaler.step(optimizer)
             scaler.update()
         else:
             optimizer.step()
 
-        loss_val = accumulated_loss
-
         dt = time.time() - t0
         total_training_time += dt
 
-        ema_beta = 0.9
-        smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * loss_val
-        debiased_smooth_loss = smooth_train_loss / (1 - ema_beta ** (step + 1))
+        ema = 0.9
+        debias = 1 - ema ** (step + 1)
+        for k in smooth:
+            smooth[k] = ema * smooth[k] + (1 - ema) * acc[k]
 
         progress = min(total_training_time / TIME_BUDGET, 1.0)
         lrm = get_lr_multiplier(progress)
-        lr = LEARNING_RATE * lrm
         for param_group in optimizer.param_groups:
-            param_group["lr"] = lr
+            param_group["lr"] = LEARNING_RATE * lrm
 
-        remaining = max(0.0, TIME_BUDGET - total_training_time)
-        print_progress(step, progress, debiased_smooth_loss, lrm, dt, remaining)
+        print_progress(
+            step,
+            progress,
+            smooth["total"] / debias,
+            smooth["evt"] / debias,
+            smooth["rate"] / debias,
+            smooth["flow"] / debias,
+            lrm,
+            dt,
+            max(0.0, TIME_BUDGET - total_training_time),
+        )
 
         step += 1
-
         if total_training_time >= TIME_BUDGET:
             break
-
         if step % 1000 == 0:
             gc.collect()
 
@@ -607,14 +541,16 @@ def print_results(
     num_params: int,
     peak_vram_mb: float,
 ) -> None:
-    """Print final results with Multimodal spatiotemporal metrics."""
+    """Print final results."""
     print("---")
-    # Primary metrics
-    print(f"event_bpb: {eval_metrics['event_bpb']:.6f}")
-    print(f"event_mse: {eval_metrics['event_mse']:.6f}")
-    # Multimodal spatiotemporalness metrics
-    print(f"event_rate_error: {eval_metrics['event_rate_error']:.6f}")
-    print(f"depth_motion_error: {eval_metrics['depth_motion_error']:.6f}")
+    # Primary metric: F1 (robust to class imbalance, meaningful for sparse events)
+    print(f"f1_score:    {eval_metrics['f1_score']:.4f}")
+    print(f"f1_on:       {eval_metrics['f1_on']:.4f}")
+    print(f"f1_off:      {eval_metrics['f1_off']:.4f}")
+    print(f"precision:   {eval_metrics['precision']:.4f}")
+    print(f"recall:      {eval_metrics['recall']:.4f}")
+    # Secondary metric
+    print(f"event_mse:   {eval_metrics['event_mse']:.6f}")
     # Training stats
     print(f"training_seconds: {total_training_time:.1f}")
     print(f"total_seconds: {total_time:.1f}")
@@ -683,9 +619,22 @@ def train(resume_from: str | None = None) -> None:
     model, num_params = create_model(device)
     print(f"Model parameters: {num_params / 1e6:.2f}M")
 
-    # Create dataloaders
+    # Create dataloaders — val uses train IMU stats to avoid leakage
+    from prepare_data import FPVDataset
+
+    _train_ds = FPVDataset(DATA_DIR, split="train")
+    train_imu_stats = (_train_ds._imu_mean, _train_ds._imu_std)
+    del _train_ds
+
     train_loader = make_dataloader(DATA_DIR, "train", DEVICE_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
-    val_loader = make_dataloader(DATA_DIR, "val", FINAL_EVAL_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
+    val_loader = make_dataloader(
+        DATA_DIR,
+        "val",
+        FINAL_EVAL_BATCH_SIZE,
+        MAX_SEQ_LEN,
+        IMAGE_SIZE,
+        imu_stats=train_imu_stats,
+    )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 

@@ -160,7 +160,7 @@ except ImportError:
 MAX_SEQ_LEN = 50  # IMU sequence length
 IMAGE_SIZE = (260, 346)  # DAVIS346 resolution
 TIME_BUDGET = 900  # 15 minutes per experiment (increased for proper evaluation)
-EVAL_SAMPLES = 100  # Number of samples for evaluation (reduced for speed)
+EVAL_SAMPLES = 500  # Number of samples for evaluation
 EVENT_WINDOW_MS = 33  # Event accumulation window (30 Hz)
 
 # Data directory
@@ -242,6 +242,7 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         seq_len: int = MAX_SEQ_LEN,
         image_size: tuple[int, int] = IMAGE_SIZE,
         event_window_ms: int = EVENT_WINDOW_MS,
+        imu_stats: tuple[np.ndarray, np.ndarray] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.split = split
@@ -258,6 +259,11 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         self.use_synthetic = False
         self._actual_data_dir: Path | None = None
         self._image_ts_array: np.ndarray = np.array([], dtype=np.float64)
+        self._imu_mean: np.ndarray = np.zeros(6, dtype=np.float32)
+        self._imu_std: np.ndarray = np.ones(6, dtype=np.float32)
+        self._imu_stats_provided = imu_stats is not None
+        if imu_stats is not None:
+            self._imu_mean, self._imu_std = imu_stats
 
         # Try to load real data
         if self.data_dir.exists():
@@ -269,8 +275,12 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
             self.use_synthetic = True
             self._generate_synthetic_data()
         else:
+            # Apply temporal train/val split (80/20) before reporting sizes
+            self._split_data()
+            if not self._imu_stats_provided:
+                self._compute_imu_stats()
             print(
-                f"Loaded {len(self.imu_data)} IMU samples, "
+                f"[{split}] {len(self.imu_data)} IMU samples, "
                 f"{len(self.event_timestamps)} events, "
                 f"{len(self.image_timestamps)} images"
             )
@@ -371,6 +381,70 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
                 [img["timestamp"] for img in self.image_timestamps], dtype=np.float64
             )
 
+    def _split_data(self) -> None:
+        """Apply a temporal 80/20 train/val split to avoid data leakage.
+
+        Uses the first 80% of the recording for training and the last 20% for
+        validation.  Both sets are drawn from the same physical sequence, but
+        no sample from the val set ever appears during training.
+        """
+        if not self.imu_data:
+            return
+
+        timestamps = np.array([d["timestamp"] for d in self.imu_data], dtype=np.float64)
+        split_time = float(np.percentile(timestamps, 80))
+
+        if self.split == "train":
+            mask_imu = timestamps < split_time
+        else:
+            mask_imu = timestamps >= split_time
+
+        self.imu_data = [d for d, keep in zip(self.imu_data, mask_imu, strict=True) if keep]
+
+        if len(self.event_timestamps) > 0:
+            if self.split == "train":
+                ev_mask = self.event_timestamps < split_time
+            else:
+                ev_mask = self.event_timestamps >= split_time
+            self.event_timestamps = self.event_timestamps[ev_mask]
+            self.event_x = self.event_x[ev_mask]
+            self.event_y = self.event_y[ev_mask]
+            self.event_polarity = self.event_polarity[ev_mask]
+
+        if self.split == "train":
+            self.image_timestamps = [
+                d for d in self.image_timestamps if d["timestamp"] < split_time
+            ]
+        else:
+            self.image_timestamps = [
+                d for d in self.image_timestamps if d["timestamp"] >= split_time
+            ]
+
+        if self.image_timestamps:
+            self._image_ts_array = np.array(
+                [img["timestamp"] for img in self.image_timestamps], dtype=np.float64
+            )
+
+    def _compute_imu_stats(self) -> None:
+        """Compute per-axis mean and std from this split's IMU data for normalization.
+
+        Uses the current split's data only — for val, this is the val statistics,
+        which is fine since we're normalizing to unit scale, not leaking labels.
+        In practice, caller should pass train stats to val dataset for strict
+        correctness, but this is sufficient for a single-sequence dataset.
+        """
+        if not self.imu_data:
+            self._imu_mean = np.zeros(6, dtype=np.float32)
+            self._imu_std = np.ones(6, dtype=np.float32)
+            return
+
+        all_imu = np.array(
+            [np.concatenate([d["acc"], d["gyro"]]) for d in self.imu_data],
+            dtype=np.float32,
+        )  # (N, 6)
+        self._imu_mean = all_imu.mean(axis=0)  # (6,)
+        self._imu_std = all_imu.std(axis=0).clip(min=1e-6)  # (6,), no division by zero
+
     def _generate_synthetic_data(self) -> None:
         """Generate synthetic data for testing."""
         num_samples = 2000
@@ -419,58 +493,46 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         while len(imu_seq) < self.seq_len:
             imu_seq.insert(0, np.zeros(6, dtype=np.float32))
 
-        return np.array(imu_seq, dtype=np.float32)
+        arr = np.array(imu_seq, dtype=np.float32)
+        # Per-axis z-score normalization so all IMU channels have comparable scale
+        arr = (arr - self._imu_mean) / self._imu_std
+        return arr
 
     def _get_event_map(self, timestamp: float) -> np.ndarray:
-        """Get event map around a given timestamp using multi-scale windows."""
+        """Get event map for the standard 33ms window aligned to camera frame rate.
+
+        Accumulates all DVS events in [timestamp - 16.5ms, timestamp + 16.5ms],
+        matching the EVENT_WINDOW_MS cadence. Normalized by max_events=100 so
+        values are in [0, 1] (actual max in FPV data ≈ 0.08).
+        """
         H, W = self.image_size
+        dt = self.event_window_ms / 1000.0
 
-        # Multi-scale temporal windows (captures fast + slow events)
-        windows_ms = [10, 33, 100]  # 10ms, 33ms, 100ms
+        pos_events = np.zeros((H, W), dtype=np.float32)
+        neg_events = np.zeros((H, W), dtype=np.float32)
 
-        all_pos_maps = []
-        all_neg_maps = []
+        if len(self.event_timestamps) == 0:
+            return np.stack([pos_events, neg_events], axis=0)
 
-        for dt_ms in windows_ms:
-            dt = dt_ms / 1000.0
+        start_time = timestamp - dt / 2
+        end_time = timestamp + dt / 2
 
-            pos_events = np.zeros((H, W), dtype=np.float32)
-            neg_events = np.zeros((H, W), dtype=np.float32)
+        start_idx = np.searchsorted(self.event_timestamps, start_time, side="left")
+        end_idx = np.searchsorted(self.event_timestamps, end_time, side="right")
 
-            if len(self.event_timestamps) == 0:
-                all_pos_maps.append(pos_events)
-                all_neg_maps.append(neg_events)
-                continue
+        if start_idx < end_idx:
+            x_v = self.event_x[start_idx:end_idx]
+            y_v = self.event_y[start_idx:end_idx]
+            p_v = self.event_polarity[start_idx:end_idx]
+            valid = (x_v >= 0) & (x_v < W) & (y_v >= 0) & (y_v < H)
+            x_v, y_v, p_v = x_v[valid], y_v[valid], p_v[valid]
+            pos_mask = p_v == 1
+            np.add.at(pos_events, (y_v[pos_mask], x_v[pos_mask]), 1)
+            np.add.at(neg_events, (y_v[~pos_mask], x_v[~pos_mask]), 1)
 
-            start_time = timestamp - dt / 2
-            end_time = timestamp + dt / 2
-
-            start_idx = np.searchsorted(self.event_timestamps, start_time, side="left")
-            end_idx = np.searchsorted(self.event_timestamps, end_time, side="right")
-
-            if start_idx < end_idx:
-                x_v = self.event_x[start_idx:end_idx]
-                y_v = self.event_y[start_idx:end_idx]
-                p_v = self.event_polarity[start_idx:end_idx]
-                valid = (x_v >= 0) & (x_v < W) & (y_v >= 0) & (y_v < H)
-                x_v = x_v[valid]
-                y_v = y_v[valid]
-                p_v = p_v[valid]
-                pos_mask = p_v == 1
-                np.add.at(pos_events, (y_v[pos_mask], x_v[pos_mask]), 1)
-                np.add.at(neg_events, (y_v[~pos_mask], x_v[~pos_mask]), 1)
-
-            # Normalize for this window size
-            max_events = 100.0 * (dt_ms / 33.0)  # Scale max with window size
-            pos_events = np.clip(pos_events / max_events, 0.0, 1.0)
-            neg_events = np.clip(neg_events / max_events, 0.0, 1.0)
-
-            all_pos_maps.append(pos_events)
-            all_neg_maps.append(neg_events)
-
-        # Average across scales (simple fusion)
-        pos_events = np.mean(np.stack(all_pos_maps), axis=0)
-        neg_events = np.mean(np.stack(all_neg_maps), axis=0)
+        max_events = 100.0
+        pos_events = np.clip(pos_events / max_events, 0.0, 1.0)
+        neg_events = np.clip(neg_events / max_events, 0.0, 1.0)
 
         return np.stack([pos_events, neg_events], axis=0)
 
@@ -480,7 +542,7 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         timestamp_cached = round(timestamp * 100) / 100.0
 
         if not hasattr(self, "_event_cache"):
-            self._event_cache = {}
+            self._event_cache: dict[float, np.ndarray] = {}
 
         if timestamp_cached in self._event_cache:
             return self._event_cache[timestamp_cached]
@@ -552,20 +614,99 @@ class FPVDataset(Dataset[dict[str, Any]]):  # type: ignore[misc]
         # Compute optical flow between current and previous frame
         flow = compute_optical_flow(image_t.squeeze(0), image_prev.squeeze(0))
 
-        # Extract DINO features from current frame
-        if HAS_TIMM:
-            dino_features = get_dino_features(image_t.squeeze(0), "cpu")
-        else:
-            dino_features = np.zeros(384, dtype=np.float32)  # fallback
-
         return {
             "image": torch.from_numpy(image),
             "imu_seq": torch.from_numpy(imu_seq),
             "events": torch.from_numpy(events),
             "flow": torch.from_numpy(flow),
-            "dino": torch.from_numpy(dino_features),
             "timestamp": timestamp,
         }
+
+
+def physics_v2e_prediction(
+    img_t: np.ndarray,
+    img_prev: np.ndarray,
+    pos_thres: float = 0.2,
+    neg_thres: float = 0.2,
+) -> np.ndarray:
+    """Physics-based DVS event prediction via log-intensity differencing.
+
+    Replicates the core v2e emulator model:
+        ΔL = log(I_t + ε) − log(I_prev + ε)
+        ON  event at pixel (x,y) iff  ΔL(x,y) >  pos_thres
+        OFF event at pixel (x,y) iff −ΔL(x,y) >  neg_thres
+
+    Args:
+        img_t:    Current grayscale frame  (H, W) in [0, 1].
+        img_prev: Previous grayscale frame (H, W) in [0, 1].
+        pos_thres: Log-intensity threshold for ON events.
+        neg_thres: Log-intensity threshold for OFF events.
+
+    Returns:
+        events: (2, H, W) float32 array — channel 0 = ON, channel 1 = OFF,
+                values in {0, 1}.
+    """
+    eps = 1e-4
+    delta_log = np.log(img_t + eps) - np.log(img_prev + eps)
+    on_events = (delta_log > pos_thres).astype(np.float32)
+    off_events = (-delta_log > neg_thres).astype(np.float32)
+    return np.stack([on_events, off_events], axis=0)
+
+
+def evaluate_physics_baseline(
+    dataloader: "DataLoader[dict[str, Any]]",
+    device: str,
+    num_samples: int = EVAL_SAMPLES,
+    threshold: float = 0.005,
+    pos_thres: float = 0.2,
+    neg_thres: float = 0.2,
+) -> dict[str, float]:
+    """Evaluate the v2e physics baseline against GT events.
+
+    This is the reference baseline: v2e physics (log-intensity threshold)
+    applied to the same frame pairs used for training.  Because GT events are
+    accumulated from a real DVS sensor (not synthesized by v2e), this is NOT
+    an oracle — it shows how well frame-differencing alone captures real events.
+
+    threshold: GT binarization threshold (same as evaluate_combined_metric).
+    """
+    total_tp = total_fp = total_fn = 0
+    total_samples = 0
+    skipped = 0
+
+    for batch in dataloader:
+        if total_samples >= num_samples:
+            break
+        images = batch["image"].numpy()  # (B, 2, H, W)
+        gt_events = batch["events"].numpy()  # (B, 2, H, W)
+
+        for b in range(images.shape[0]):
+            img_t = images[b, 0]  # current frame
+            img_prev = images[b, 1]  # previous frame
+
+            # Skip boundary samples where both frames are identical (split edge)
+            if np.allclose(img_t, img_prev, atol=1e-6):
+                skipped += 1
+                continue
+
+            pred = physics_v2e_prediction(img_t, img_prev, pos_thres, neg_thres)
+
+            pred_bin = pred > 0.5
+            gt_bin = gt_events[b] > threshold
+
+            total_tp += int((pred_bin & gt_bin).sum())
+            total_fp += int((pred_bin & ~gt_bin).sum())
+            total_fn += int((~pred_bin & gt_bin).sum())
+
+        total_samples += images.shape[0]
+
+    if skipped:
+        print(f"  (skipped {skipped} boundary samples with identical frame pairs)")
+
+    precision = total_tp / (total_tp + total_fp + 1e-8)
+    recall = total_tp / (total_tp + total_fn + 1e-8)
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    return {"precision": float(precision), "recall": float(recall), "f1": float(f1)}
 
 
 def make_dataloader(
@@ -574,14 +715,20 @@ def make_dataloader(
     batch_size: int,
     seq_len: int = MAX_SEQ_LEN,
     image_size: tuple[int, int] = IMAGE_SIZE,
-    num_workers: int = 2,  # Use 2 workers (safer for macOS, avoids semaphore issues)
+    num_workers: int = 2,
+    imu_stats: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> DataLoader:
-    """Create a dataloader for the given split."""
+    """Create a dataloader for the given split.
+
+    Pass imu_stats=(mean, std) from the training dataset to the val dataset so
+    both splits are normalised with the same statistics.
+    """
     dataset = FPVDataset(
         data_dir=data_dir,
         split=split,
         seq_len=seq_len,
         image_size=image_size,
+        imu_stats=imu_stats,
     )
 
     return DataLoader(
@@ -602,25 +749,32 @@ def evaluate_combined_metric(
     dataloader: DataLoader,
     device: str,
     num_samples: int = EVAL_SAMPLES,
+    gt_threshold: float = 0.005,
+    pred_threshold: float = 0.5,
 ) -> dict[str, float]:
-    """Evaluate model with improved Multimodal spatiotemporal metrics.
+    """Evaluate model using F1 score as the primary metric.
+
+    Two separate thresholds:
+    - gt_threshold=0.005: binarise GT (≥0.5 events/33ms after /100 normalisation)
+    - pred_threshold=0.5: standard sigmoid decision boundary for predictions
 
     Metrics:
-    - event_bpb: Bits per byte for event prediction (lower is better)
-    - event_mse: Mean squared error on events
-    - event_rate_error: How well event rate matches motion magnitude
-    - depth_motion_corr: Correlation between predicted depth and IMU motion
+    - f1_score:   Binary F1 (primary — robust to class imbalance)
+    - precision:  Precision at pred_threshold
+    - recall:     Recall at pred_threshold
+    - f1_on:      F1 for ON events (channel 0) only
+    - f1_off:     F1 for OFF events (channel 1) only
+    - event_mse:  Mean squared error (secondary — kept for reference)
     """
     model.eval()
 
-    total_poisson_nll = 0.0
+    total_tp = total_fp = total_fn = 0
+    total_tp_on = total_fp_on = total_fn_on = 0
+    total_tp_off = total_fp_off = total_fn_off = 0
     total_mse = 0.0
     total_elements = 0
-    total_rate_error = 0.0
-    total_depth_motion_error = 0.0
     total_samples = 0
     start_time = time.time()
-    pred_depth = None
 
     with torch.no_grad():
         for batch in dataloader:
@@ -632,55 +786,58 @@ def evaluate_combined_metric(
             gt_events = batch["events"].to(device)
 
             output = model(images, imu_seq)
-            if isinstance(output, tuple):
-                pred_events, pred_depth = output
-            else:
-                pred_events = output
-                pred_depth = None
+            pred_events = output[0] if isinstance(output, tuple) else output
 
-            # Poisson NLL (consistent with training loss)
-            gt_counts = gt_events * 100.0
-            pred_counts = pred_events * 100.0
-            poisson_nll = pred_counts - gt_counts * torch.log(pred_counts + 1e-6)
-            total_poisson_nll += poisson_nll.sum().item()
+            # Separate thresholds: GT binarisation vs sigmoid decision boundary
+            pred_bin = pred_events > pred_threshold
+            gt_bin = gt_events > gt_threshold
 
-            # MSE
+            total_tp += int((pred_bin & gt_bin).sum().item())
+            total_fp += int((pred_bin & ~gt_bin).sum().item())
+            total_fn += int((~pred_bin & gt_bin).sum().item())
+
+            # Per-polarity F1 (ON = channel 0, OFF = channel 1)
+            for ch, _on_off in enumerate(["on", "off"]):
+                pb = pred_bin[:, ch]
+                gb = gt_bin[:, ch]
+                if ch == 0:
+                    total_tp_on += int((pb & gb).sum().item())
+                    total_fp_on += int((pb & ~gb).sum().item())
+                    total_fn_on += int((~pb & gb).sum().item())
+                else:
+                    total_tp_off += int((pb & gb).sum().item())
+                    total_fp_off += int((pb & ~gb).sum().item())
+                    total_fn_off += int((~pb & gb).sum().item())
+
+            # MSE (secondary)
             total_mse += torch.nn.functional.mse_loss(
                 pred_events, gt_events, reduction="sum"
             ).item()
             total_elements += gt_events.numel()
 
-            # Event rate error
-            pred_event_rate = pred_events.abs().sum(dim=(1, 2, 3))
-            gt_event_rate = gt_events.abs().sum(dim=(1, 2, 3))
-            total_rate_error += torch.nn.functional.mse_loss(pred_event_rate, gt_event_rate).item()
-
-            # Depth-motion consistency
-            if pred_depth is not None:
-                imu_motion = imu_seq[:, :, :3].norm(dim=-1).mean(dim=1)
-                total_depth_motion_error += torch.nn.functional.mse_loss(
-                    pred_depth.squeeze(1), imu_motion
-                ).item()
-
             total_samples += images.shape[0]
 
     elapsed = time.time() - start_time
-    samples_per_sec = total_samples / elapsed if elapsed > 0 else 0
+    samples_per_sec = total_samples / elapsed if elapsed > 0 else 0.0
 
-    # event_bpb: Poisson NLL per element in bits (consistent with training)
-    event_bpb = (total_poisson_nll / total_elements) / np.log(2)
-    avg_event_mse = total_mse / total_elements
-    avg_rate_error = total_rate_error / total_samples
-    avg_depth_motion_error = (
-        total_depth_motion_error / total_samples if pred_depth is not None else 0.0
-    )
+    def _f1(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
+        p = tp / (tp + fp + 1e-8)
+        r = tp / (tp + fn + 1e-8)
+        f = 2 * p * r / (p + r + 1e-8)
+        return float(p), float(r), float(f)
+
+    precision, recall, f1 = _f1(total_tp, total_fp, total_fn)
+    _, _, f1_on = _f1(total_tp_on, total_fp_on, total_fn_on)
+    _, _, f1_off = _f1(total_tp_off, total_fp_off, total_fn_off)
 
     return {
-        "event_bpb": float(event_bpb),
-        "event_mse": float(avg_event_mse),
-        "event_rate_error": float(avg_rate_error),
-        "depth_motion_error": float(avg_depth_motion_error),
-        "samples_per_sec": float(samples_per_sec),
+        "f1_score": f1,
+        "precision": precision,
+        "recall": recall,
+        "f1_on": f1_on,
+        "f1_off": f1_off,
+        "event_mse": float(total_mse / max(total_elements, 1)),
+        "samples_per_sec": samples_per_sec,
     }
 
 
