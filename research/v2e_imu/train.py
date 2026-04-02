@@ -255,7 +255,7 @@ FNO_LAYERS = 4  # Number of FNO+FiLM blocks
 FNO_CHANNELS = 128  # Feature channels in FNO trunk
 
 # Training
-TOTAL_BATCH_SIZE = 16
+TOTAL_BATCH_SIZE = 8
 DEVICE_BATCH_SIZE = 4
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 0.0
