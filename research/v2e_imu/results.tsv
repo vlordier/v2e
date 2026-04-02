@@ -8,3 +8,4 @@ af37f9d	0.5720	0.0	discard	WARMUP=5% WARMDOWN=50% (closest so far, precision 0.4
 87e7a3a	0.5757	0.0	keep	TOTAL_BATCH_SIZE=16 (2x gradient updates, +0.0023 over baseline)
 4e07ef3	0.5742	0.0	discard	batch=16 + WARMUP=5% WARMDOWN=50% (didn't stack, worse than batch=16 alone)
 f25d0dc	0.5776	0.0	keep	TOTAL_BATCH_SIZE=8 (4x gradient updates, +0.0019 over batch=16)
+c5e423b	0.5865	0.0	keep	TOTAL_BATCH_SIZE=4 (no accum, max updates, +0.0089 over batch=8)
