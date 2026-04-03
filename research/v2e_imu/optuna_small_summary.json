@@ -1,0 +1,12 @@
+{
+  "best_value": 0.5147,
+  "best_params": {
+    "LEARNING_RATE": "1e-3",
+    "WEIGHT_DECAY": "1e-5",
+    "WARMUP_RATIO": "0.1",
+    "WARMDOWN_RATIO": "0.3",
+    "FINAL_LR_FRAC": "0.05"
+  },
+  "completed_trials": 6,
+  "total_trials": 6
+}
