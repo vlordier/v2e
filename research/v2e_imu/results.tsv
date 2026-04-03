@@ -12,3 +12,10 @@ c5e423b	0.5865	0.0	keep	TOTAL_BATCH_SIZE=4 (no accum, max updates, +0.0089 over 
 baf3a14	0.5842	0.0	discard	TOTAL_BATCH_SIZE=2 (too noisy, batch=4 is sweet spot)
 30c443d	0.5555	0.0	discard	FNO model batch=4 (9.3M params, too slow to converge in 15min)
 9371855	0.5787	0.0	discard	batch=4 LR=3e-4 (lower LR hurt, LR=1e-3 is optimal)
+d775f0e	0.495300	0.0	discard	IMU_HIDDEN_DIM 192 with batch=4, LR=1e-3, warmdown=0.3
+5d6a492	0.497200	0.0	discard	deeper IMU encoder: bidirectional LSTM layers 2->3 (best scheduler fixed)
+7b5bf5b	0.509500	0.0	discard	smaller UNet width: BASE_CHANNELS 32->24 (best scheduler fixed)
+61deeed	0.479300	0.0	discard	additive-only FiLM fusion (remove multiplicative scale)
+f8a734c	0.474400	0.0	discard	scale-only FiLM fusion (remove additive bias)
+5102420	0.504200	0.0	discard	focal loss alpha 0.75->0.85 (stronger positive weighting)
+6f5c106	0.463500	0.0	discard	increased UNet BASE_CHANNELS 32->48 (+50% capacity)
