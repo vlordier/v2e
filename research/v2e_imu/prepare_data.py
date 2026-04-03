@@ -731,16 +731,20 @@ def make_dataloader(
         imu_stats=imu_stats,
     )
 
+    safe_num_workers = 0 if sys.platform == "darwin" else num_workers
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=(split == "train"),
-        num_workers=num_workers,
+        num_workers=safe_num_workers,
         pin_memory=(torch.cuda.is_available() or torch.backends.mps.is_available()),
-        persistent_workers=(num_workers > 0),
-        prefetch_factor=2 if num_workers > 0 else None,
-        timeout=60 if num_workers > 0 else 0,
-        multiprocessing_context="fork" if (num_workers > 0 and sys.platform != "win32") else None,
+        persistent_workers=(safe_num_workers > 0),
+        prefetch_factor=2 if safe_num_workers > 0 else None,
+        timeout=60 if safe_num_workers > 0 else 0,
+        multiprocessing_context=("spawn" if sys.platform == "darwin" else "fork")
+        if (safe_num_workers > 0 and sys.platform != "win32")
+        else None,
     )
 
 

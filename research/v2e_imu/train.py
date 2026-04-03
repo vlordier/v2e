@@ -12,12 +12,14 @@ Usage:
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fno_event_predictor import FNOEventPredictor
+from mlflow_utils import MlflowRunManager
 from prepare_data import (
     DATA_DIR,
     EVAL_SAMPLES,
@@ -610,79 +612,148 @@ def load_checkpoint(
 
 def train(resume_from: str | None = None) -> None:
     """Main training function."""
-    device = setup_device()
-    print(f"Device: {device}")
-    print(f"Time budget: {TIME_BUDGET}s")
+    mlflow_run = MlflowRunManager(run_name=os.getenv("MLFLOW_RUN_NAME"))
+    status = "FINISHED"
 
-    model, num_params = create_model(device)
-    print(f"Model parameters: {num_params / 1e6:.2f}M")
+    try:
+        device = setup_device()
+        print(f"Device: {device}")
+        print(f"Time budget: {TIME_BUDGET}s")
 
-    # Create dataloaders — val uses train IMU stats to avoid leakage
-    train_loader = make_dataloader(DATA_DIR, "train", DEVICE_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE)
-    train_imu_stats = (
-        train_loader.dataset._imu_mean,
-        train_loader.dataset._imu_std,
-    )
-    val_loader = make_dataloader(
-        DATA_DIR,
-        "val",
-        FINAL_EVAL_BATCH_SIZE,
-        MAX_SEQ_LEN,
-        IMAGE_SIZE,
-        imu_stats=train_imu_stats,
-    )
+        model, num_params = create_model(device)
+        print(f"Model parameters: {num_params / 1e6:.2f}M")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-
-    grad_accum_steps = TOTAL_BATCH_SIZE // DEVICE_BATCH_SIZE
-    print(f"Gradient accumulation steps: {grad_accum_steps}")
-
-    if resume_from and os.path.exists(resume_from):
-        model, optimizer, start_epoch, _ = load_checkpoint(resume_from, model, optimizer, device)
-        print(f"Resuming from epoch {start_epoch}")
-
-    t_start = time.time()
-    total_training_time, num_steps = run_training_loop(
-        model, optimizer, train_loader, device, grad_accum_steps
-    )
-
-    t_train = time.time()
-    print(f"Training completed in {t_train - t_start:.1f}s")
-
-    save_checkpoint(
-        model, optimizer, num_steps, total_training_time, "event_predictor_checkpoint.pt"
-    )
-
-    del train_loader
-
-    print("Starting final eval...")
-    physics_metrics = evaluate_physics_baseline(val_loader, device, EVAL_SAMPLES)
-    print(
-        f"Physics baseline: F1={physics_metrics['f1']:.4f} "
-        f"P={physics_metrics['precision']:.4f} R={physics_metrics['recall']:.4f}"
-    )
-    if physics_metrics["f1"] < 0.01:
-        print(
-            "WARNING: physics baseline F1≈0 — image files may be missing. "
-            "Run: python download_fpv.py --sequence indoor_forward_3"
+        mlflow_run.start(
+            params={
+                "model_type": MODEL_TYPE,
+                "base_channels": BASE_CHANNELS,
+                "imu_hidden_dim": IMU_HIDDEN_DIM,
+                "total_batch_size": TOTAL_BATCH_SIZE,
+                "device_batch_size": DEVICE_BATCH_SIZE,
+                "learning_rate": LEARNING_RATE,
+                "weight_decay": WEIGHT_DECAY,
+                "warmup_ratio": WARMUP_RATIO,
+                "warmdown_ratio": WARMDOWN_RATIO,
+                "final_lr_frac": FINAL_LR_FRAC,
+                "final_eval_batch_size": FINAL_EVAL_BATCH_SIZE,
+                "time_budget_s": TIME_BUDGET,
+                "resume_from": resume_from or "",
+            },
+            tags={"device": device},
         )
 
-    eval_metrics = evaluate_combined_metric(model, val_loader, device, EVAL_SAMPLES)
-    t_eval = time.time()
-    print(f"Final eval completed in {t_eval - t_train:.1f}s")
+        # Create dataloaders — val uses train IMU stats to avoid leakage
+        train_loader = make_dataloader(
+            DATA_DIR, "train", DEVICE_BATCH_SIZE, MAX_SEQ_LEN, IMAGE_SIZE
+        )
+        train_imu_stats = (
+            train_loader.dataset._imu_mean,
+            train_loader.dataset._imu_std,
+        )
+        val_loader = make_dataloader(
+            DATA_DIR,
+            "val",
+            FINAL_EVAL_BATCH_SIZE,
+            MAX_SEQ_LEN,
+            IMAGE_SIZE,
+            imu_stats=train_imu_stats,
+        )
 
-    del val_loader
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+        )
 
-    peak_vram_mb = get_peak_memory_mb()
-    print_results(
-        eval_metrics,
-        total_training_time,
-        t_eval - t_start,
-        num_steps,
-        num_params,
-        peak_vram_mb,
-        physics_metrics,
-    )
+        grad_accum_steps = TOTAL_BATCH_SIZE // DEVICE_BATCH_SIZE
+        print(f"Gradient accumulation steps: {grad_accum_steps}")
+
+        if resume_from and os.path.exists(resume_from):
+            model, optimizer, start_epoch, _ = load_checkpoint(
+                resume_from, model, optimizer, device
+            )
+            print(f"Resuming from epoch {start_epoch}")
+
+        t_start = time.time()
+        total_training_time, num_steps = run_training_loop(
+            model, optimizer, train_loader, device, grad_accum_steps
+        )
+
+        t_train = time.time()
+        print(f"Training completed in {t_train - t_start:.1f}s")
+
+        checkpoint_path = Path("event_predictor_checkpoint.pt")
+        save_checkpoint(model, optimizer, num_steps, total_training_time, str(checkpoint_path))
+
+        del train_loader
+
+        print("Starting final eval...")
+        physics_metrics = evaluate_physics_baseline(val_loader, device, EVAL_SAMPLES)
+        print(
+            f"Physics baseline: F1={physics_metrics['f1']:.4f} "
+            f"P={physics_metrics['precision']:.4f} R={physics_metrics['recall']:.4f}"
+        )
+        if physics_metrics["f1"] < 0.01:
+            print(
+                "WARNING: physics baseline F1≈0 — image files may be missing. "
+                "Run: python download_fpv.py --sequence indoor_forward_3"
+            )
+
+        eval_metrics = evaluate_combined_metric(model, val_loader, device, EVAL_SAMPLES)
+        t_eval = time.time()
+        print(f"Final eval completed in {t_eval - t_train:.1f}s")
+
+        del val_loader
+
+        peak_vram_mb = get_peak_memory_mb()
+        print_results(
+            eval_metrics,
+            total_training_time,
+            t_eval - t_start,
+            num_steps,
+            num_params,
+            peak_vram_mb,
+            physics_metrics,
+        )
+
+        mlflow_run.set_tags({"run.status": "finished"})
+        mlflow_run.log_metrics(
+            {
+                "val_ap": eval_metrics["val_ap"],
+                "f1_score": eval_metrics["f1_score"],
+                "f1_on": eval_metrics["f1_on"],
+                "f1_off": eval_metrics["f1_off"],
+                "precision": eval_metrics["precision"],
+                "recall": eval_metrics["recall"],
+                "event_mse": eval_metrics["event_mse"],
+                "samples_per_sec": eval_metrics["samples_per_sec"],
+                "physics_f1": physics_metrics["f1"],
+                "training_seconds": total_training_time,
+                "total_seconds": t_eval - t_start,
+                "peak_vram_mb": peak_vram_mb,
+                "num_steps": float(num_steps),
+                "num_params_m": num_params / 1e6,
+            },
+            step=num_steps,
+        )
+        mlflow_run.log_artifacts(
+            [
+                checkpoint_path,
+                Path("run.log"),
+                Path(__file__),
+                Path("prepare_data.py"),
+            ]
+        )
+    except Exception as exc:
+        status = "FAILED"
+        mlflow_run.set_tags(
+            {
+                "run.status": "failed",
+                "exception_type": type(exc).__name__,
+            }
+        )
+        mlflow_run.log_text(f"{type(exc).__name__}: {exc}\n", "exception.txt")
+        raise
+    finally:
+        mlflow_run.end(status=status)
 
 
 if __name__ == "__main__":

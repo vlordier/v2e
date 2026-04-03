@@ -4,6 +4,7 @@
 data/
 notebook/
 *.sh
+!scripts/vastai_bootstrap.sh
 aedat-text-test.txt
 input/*
 
@@ -166,3 +167,10 @@ research/v2e_imu/datasets/
 research/v2e_imu/checkpoints/
 research/v2e_imu/test_checkpoints/
 research/v2e_imu/download.log
+
+# Remote autoresearch / MLflow artifacts
+mlruns/
+research/v2e_imu/mlruns/
+logs/
+autoresearch.out
+.env.vastai.local

@@ -1,0 +1,22 @@
+{
+  "experiments": [
+    {
+      "name": "AdamW weight_decay=1e-2",
+      "description": "Best batch-size configuration with stronger AdamW regularization.",
+      "commit_message": "probe: AdamW weight_decay=1e-2",
+      "constants": {
+        "WEIGHT_DECAY": "1e-2"
+      }
+    },
+    {
+      "name": "Scheduler warmup 5% warmdown 50%",
+      "description": "Retest the strongest scheduler shape on the best batch-size/LR baseline.",
+      "commit_message": "probe: warmup 5% warmdown 50%",
+      "constants": {
+        "WARMUP_RATIO": "0.05",
+        "WARMDOWN_RATIO": "0.5",
+        "FINAL_LR_FRAC": "0.01"
+      }
+    }
+  ]
+}
