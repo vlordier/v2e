@@ -147,6 +147,11 @@ dmypy.json
 cython_debug/
 
 *.ckpt
+*.pt
+
+# Optuna / research artifacts
+optuna_small_study.db
+optuna_small_summary.json
 
 # Research datasets
 *.bag
