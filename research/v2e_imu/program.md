@@ -43,6 +43,18 @@ Each experiment runs on Apple Silicon. The training script runs for a **fixed ti
 
 **Memory** is a soft constraint. MLX uses unified memory shared between CPU and GPU. Some increase is acceptable for meaningful event_bpb gains, but it should not blow up dramatically.
 
+**GPU utilization** is critical for wall-clock speed. The training script automatically selects the best available device in this priority order:
+1. **CUDA** (NVIDIA GPU) — best performance and memory bandwidth
+2. **MPS** (Apple Metal Performance Shaders) — good GPU acceleration on macOS
+3. **CPU** (fallback) — slow; only use if no GPU available
+
+When you have GPU access, maximize utilization by:
+- Using `TOTAL_BATCH_SIZE` and `DEVICE_BATCH_SIZE` large enough to saturate the GPU (typically ≥ 4–16 depending on GPU VRAM and model size)
+- Ensuring the GPU runs at high utilization during training (monitor `nvidia-smi` on CUDA or Activity Monitor on MPS)
+- Avoiding OOM crashes — if memory is full, reduce batch size rather than adding CPU offloading
+
+The script warns if running on CPU; if you see "WARNING: No GPU available", you're not using GPU acceleration.
+
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 event_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 event_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
 
 **The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
@@ -124,6 +136,16 @@ The idea is that you are a completely autonomous researcher trying things out. I
 **Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g., a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until they manually stop you. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
+
+**CRITICAL: Push results after each experiment.** If running on Colab or remote kernel, execute `git push` after every keep/discard decision to persist results.tsv and the research branch to GitHub. If you don't push, all progress will be lost when the kernel is terminated. After advancing a keep:
+```bash
+git push origin research/<branch>
+```
+If a discard reverts a commit, push the reset:
+```bash
+git push --force-with-lease origin research/<branch>
+```
+This ensures results survive kernel restarts and are always backed up to the repo.
 
 As an example use case, a user might leave you running while they sleep. If each experiment takes ~12 minutes then you can run approx 5/hour, for a total of about 40 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
 

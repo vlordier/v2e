@@ -736,7 +736,7 @@ def make_dataloader(
         batch_size=batch_size,
         shuffle=(split == "train"),
         num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=(torch.cuda.is_available() or torch.backends.mps.is_available()),
         persistent_workers=(num_workers > 0),
         prefetch_factor=2 if num_workers > 0 else None,
         timeout=60 if num_workers > 0 else 0,
