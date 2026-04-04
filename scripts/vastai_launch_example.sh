@@ -8,6 +8,7 @@ LOCAL_PYTHON="${LOCAL_PYTHON:-$VENV_DIR/bin/python}"
 IMAGE="${IMAGE:-nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04}"
 DISK_GB="${DISK_GB:-80}"
 SEARCH_QUERY="${SEARCH_QUERY:-reliability > 0.98 num_gpus=1 gpu_ram>=20 dph<0.6 inet_up>100 inet_down>100}"
+DEFAULT_BASE_BRANCH="${BASE_BRANCH:-$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)}"
 ACTION="${1:-launch}"
 OFFER_ID="${2:-${OFFER_ID:-}}"
 
@@ -76,6 +77,7 @@ build_remote_env() {
 GITHUB_TOKEN=$(shell_quote "${GITHUB_TOKEN:-}")
 GITHUB_REPO_URL=$(shell_quote "${GITHUB_REPO_URL:-https://github.com/vlordier/v2e.git}")
 GITHUB_REMOTE=$(shell_quote "${GITHUB_REMOTE:-origin}")
+BASE_BRANCH=$(shell_quote "$DEFAULT_BASE_BRANCH")
 RESEARCH_BRANCH=$(shell_quote "${RESEARCH_BRANCH:-research/vastai-$(date +%b%d | tr '[:upper:]' '[:lower:]')}")
 GIT_AUTHOR_NAME=$(shell_quote "${GIT_AUTHOR_NAME:-vastai-autoresearch}")
 GIT_AUTHOR_EMAIL=$(shell_quote "${GIT_AUTHOR_EMAIL:-vastai-autoresearch@example.com}")
@@ -97,9 +99,12 @@ build_onstart() {
 apt-get update && apt-get install -y git curl python3 python3-venv python3-pip && \
 mkdir -p /workspace && \
 cd /workspace && \
-if [ ! -d v2e/.git ]; then git clone $(shell_quote "${GITHUB_REPO_URL:-https://github.com/vlordier/v2e.git}") v2e; fi && \
+if [ ! -d v2e/.git ]; then git clone --branch $(shell_quote "$DEFAULT_BASE_BRANCH") --single-branch $(shell_quote "${GITHUB_REPO_URL:-https://github.com/vlordier/v2e.git}") v2e; fi && \
 cd /workspace/v2e && \
-cat > research/v2e_imu/.env.vastai.local <<'ENVVARS'\n$(build_remote_env)\nENVVARS
+mkdir -p research/v2e_imu && \
+cat > research/v2e_imu/.env.vastai.local <<'ENVVARS'
+$(build_remote_env)
+ENVVARS
 chmod +x scripts/vastai_bootstrap.sh && \
 ENV_FILE=research/v2e_imu/.env.vastai.local bash scripts/vastai_bootstrap.sh
 EOF
