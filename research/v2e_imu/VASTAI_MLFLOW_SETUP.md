@@ -27,19 +27,28 @@ This avoids hardcoding the token into the repo or notebook.
 
 ## 3. Start a Vast.ai instance
 
-Use:
+Use the self-bootstrapping launcher:
 
 ```bash
-bash scripts/vastai_launch_example.sh
+bash scripts/vastai_launch_example.sh launch
 ```
 
-That helper will:
+Useful variants:
 
-1. search for a suitable GPU offer
-2. create the instance
-3. install system deps
-4. write `research/v2e_imu/.env.vastai.local`
-5. run `scripts/vastai_bootstrap.sh`
+```bash
+bash scripts/vastai_launch_example.sh search
+bash scripts/vastai_launch_example.sh dry-run
+bash scripts/vastai_launch_example.sh print-onstart
+```
+
+The launcher will:
+
+1. auto-load `research/v2e_imu/.env.vastai.local` if present
+2. auto-install the `vastai` CLI into the repo `.venv` if it is missing
+3. search for a suitable GPU offer
+4. create the instance
+5. write `research/v2e_imu/.env.vastai.local` on the remote machine
+6. run `scripts/vastai_bootstrap.sh`
 
 ## 4. Monitor the run
 
@@ -56,3 +65,4 @@ Or inspect MLflow and S3 artifacts.
 - Winning experiments are kept and pushed to the research branch.
 - Discards are logged in `results.tsv` and can also be copied to S3.
 - On macOS, `prepare_data.py` now falls back to `num_workers=0` to avoid dataloader worker crashes during local testing.
+- If you prefer the Vast.ai web UI, use `bash scripts/vastai_launch_example.sh print-onstart` and paste the emitted command into the instance `on-start script` field.

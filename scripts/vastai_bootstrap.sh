@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${GITHUB_TOKEN:?Set GITHUB_TOKEN to a fine-grained PAT or GitHub App token}"
-
 GITHUB_REPO_URL="${GITHUB_REPO_URL:-https://github.com/vlordier/v2e.git}"
 REPO_DIR="${REPO_DIR:-$HOME/v2e}"
 BASE_BRANCH="${BASE_BRANCH:-research/apr03}"
@@ -10,6 +8,16 @@ RESEARCH_BRANCH="${RESEARCH_BRANCH:-research/vastai-$(date +%b%d | tr '[:upper:]
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 AUTORESEARCH_PLAN="${AUTORESEARCH_PLAN:-research/v2e_imu/autoresearch_plan.example.json}"
 LOG_DIR="${LOG_DIR:-$REPO_DIR/logs}"
+ENV_FILE="${ENV_FILE:-$REPO_DIR/research/v2e_imu/.env.vastai.local}"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+: "${GITHUB_TOKEN:?Set GITHUB_TOKEN to a fine-grained PAT or GitHub App token}"
 
 AUTH_HEADER="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
 GIT_AUTH=(-c "http.extraheader=AUTHORIZATION: basic ${AUTH_HEADER}")
@@ -46,6 +54,7 @@ export RESEARCH_BRANCH
 export GITHUB_REMOTE="${GITHUB_REMOTE:-origin}"
 
 nohup python research/v2e_imu/autoresearch_runner.py \
+  --env-file "$ENV_FILE" \
   --plan "$AUTORESEARCH_PLAN" \
   --python-bin "$REPO_DIR/.venv/bin/python" \
   --branch "$RESEARCH_BRANCH" \

@@ -17,10 +17,10 @@ RESEARCH_DIR = Path(__file__).resolve().parent
 TRAIN_FILE = RESEARCH_DIR / "train.py"
 RESULTS_TSV = RESEARCH_DIR / "results.tsv"
 RUN_LOG = RESEARCH_DIR / "run.log"
-DEFAULT_TIMEOUT_SECONDS = int(os.getenv("TRAIN_TIMEOUT_SECONDS", "1200"))
-DEFAULT_REMOTE = os.getenv("GITHUB_REMOTE", "origin")
-DEFAULT_BRANCH = os.getenv("RESEARCH_BRANCH", f"research/vastai-{time.strftime('%b%d').lower()}")
-DEFAULT_PYTHON = os.getenv("PYTHON_BIN", sys.executable)
+DEFAULT_ENV_FILE = RESEARCH_DIR / ".env.vastai.local"
+DEFAULT_TIMEOUT_SECONDS = 1200
+DEFAULT_REMOTE = "origin"
+DEFAULT_PYTHON = sys.executable
 
 BASELINE_CONSTANTS: dict[str, str] = {
     "MODEL_TYPE": '"unet"',
@@ -72,6 +72,24 @@ class Experiment:
     commit_message: str
     constants: dict[str, str] = field(default_factory=dict)
     replacements: tuple[Replacement, ...] = ()
+
+
+def default_branch_name() -> str:
+    return os.getenv("RESEARCH_BRANCH", f"research/vastai-{time.strftime('%b%d').lower()}")
+
+
+def load_env_file(path: Path | None) -> None:
+    if path is None or not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        os.environ.setdefault(key, value)
 
 
 def run(
@@ -365,20 +383,30 @@ def log_and_finalize(
 
 
 def main() -> None:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
+    pre_args, remaining = pre_parser.parse_known_args()
+    load_env_file(pre_args.env_file)
+
     parser = argparse.ArgumentParser(
         description="Run the v2e IMU autoresearch loop outside the notebook."
     )
+    parser.add_argument("--env-file", type=Path, default=pre_args.env_file)
     parser.add_argument(
         "--plan", type=Path, default=None, help="Path to the experiment plan JSON file."
     )
-    parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
-    parser.add_argument("--python-bin", default=DEFAULT_PYTHON)
-    parser.add_argument("--remote", default=DEFAULT_REMOTE)
-    parser.add_argument("--branch", default=DEFAULT_BRANCH)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=int(os.getenv("TRAIN_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))),
+    )
+    parser.add_argument("--python-bin", default=os.getenv("PYTHON_BIN", DEFAULT_PYTHON))
+    parser.add_argument("--remote", default=os.getenv("GITHUB_REMOTE", DEFAULT_REMOTE))
+    parser.add_argument("--branch", default=default_branch_name())
     parser.add_argument(
         "--push", action="store_true", help="Push results back to GitHub after each run."
     )
-    args = parser.parse_args()
+    args = parser.parse_args(remaining)
 
     os.chdir(ROOT)
     ensure_git_identity()
