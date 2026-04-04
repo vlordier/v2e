@@ -5,6 +5,7 @@ data/
 notebook/
 *.sh
 !scripts/vastai_bootstrap.sh
+!scripts/vastai_launch_example.sh
 aedat-text-test.txt
 input/*
 
