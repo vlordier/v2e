@@ -6,6 +6,7 @@ notebook/
 *.sh
 !scripts/vastai_bootstrap.sh
 !scripts/vastai_launch_example.sh
+!scripts/lint_shell.sh
 aedat-text-test.txt
 input/*
 

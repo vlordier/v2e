@@ -66,3 +66,8 @@ Or inspect MLflow and S3 artifacts.
 - Discards are logged in `results.tsv` and can also be copied to S3.
 - On macOS, `prepare_data.py` now falls back to `num_workers=0` to avoid dataloader worker crashes during local testing.
 - If you prefer the Vast.ai web UI, use `bash scripts/vastai_launch_example.sh print-onstart` and paste the emitted command into the instance `on-start script` field.
+- Lint the automation shell scripts with:
+
+```bash
+bash scripts/lint_shell.sh
+```

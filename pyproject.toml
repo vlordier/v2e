@@ -65,6 +65,7 @@ dev = [
   "pre-commit",
   "types-numpy",
   "types-Pillow",
+  "shellcheck-py",
 ]
 mlops = [
   "awscli>=1.36",
