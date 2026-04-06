@@ -57,6 +57,24 @@ class AutoresearchRunnerTests(unittest.TestCase):
         self.assertIn("LEARNING_RATE", exp.constants)
         self.assertIn("TOTAL_BATCH_SIZE", exp.constants)
 
+    def test_build_optuna_experiment_advances_between_calls(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+            config = runner.OptunaConfig(
+                enabled=True,
+                study_name="unit-test-study-advance",
+                storage_url=f"sqlite:///{tmp.name}",
+                max_generated=1,
+                sampler_seed=42,
+            )
+
+            first = runner.build_optuna_experiment(config, completed_descriptions=set())
+            second = runner.build_optuna_experiment(config, completed_descriptions=set())
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        assert first is not None and second is not None
+        self.assertNotEqual(first.constants, second.constants)
+
     def test_completed_descriptions_treat_crash_as_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             results_path = Path(tmpdir) / "results.tsv"
