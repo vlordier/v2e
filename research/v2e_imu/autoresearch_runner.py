@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import datetime
+import email.utils
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -124,6 +130,133 @@ def _warn_command_failure(action: str, result: subprocess.CompletedProcess[str])
         print(f"WARNING: {action} failed (exit {result.returncode}): {detail}")
     else:
         print(f"WARNING: {action} failed (exit {result.returncode})")
+
+
+def _measure_aws_clock_offset_seconds() -> int:
+    request = urllib.request.Request(
+        "https://sts.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15"
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=10)
+    except urllib.error.HTTPError as exc:
+        response = exc
+    except Exception as exc:
+        print(f"WARNING: could not measure AWS clock skew: {exc}")
+        return 0
+
+    date_header = response.headers.get("Date")
+    if not date_header:
+        return 0
+
+    try:
+        server_time = email.utils.parsedate_to_datetime(date_header)
+        if server_time.tzinfo is None:
+            server_time = server_time.replace(tzinfo=datetime.timezone.utc)
+        local_time = datetime.datetime.now(datetime.timezone.utc)
+        offset_seconds = int((server_time - local_time).total_seconds())
+        if abs(offset_seconds) >= 30:
+            print(f"Applying AWS clock skew correction: {offset_seconds}s")
+        return offset_seconds
+    except Exception as exc:
+        print(f"WARNING: could not parse AWS Date header: {exc}")
+        return 0
+
+
+@contextlib.contextmanager
+def _patched_botocore_clock(offset_seconds: int) -> Iterator[None]:
+    if abs(offset_seconds) < 30:
+        yield
+        return
+
+    try:
+        import botocore.auth
+        import botocore.compat
+        import botocore.endpoint
+        import botocore.signers
+    except Exception as exc:
+        print(f"WARNING: could not patch botocore clock: {exc}")
+        yield
+        return
+
+    modules: list[Any] = [
+        botocore.compat,
+        botocore.auth,
+        botocore.endpoint,
+        botocore.signers,
+    ]
+    try:
+        import botocore.crt.auth as botocore_crt_auth
+
+        modules.append(botocore_crt_auth)
+    except Exception:
+        pass
+
+    originals = {
+        module: module.get_current_datetime
+        for module in modules
+        if hasattr(module, "get_current_datetime")
+    }
+
+    def skewed_now(remove_tzinfo: bool = True) -> datetime.datetime:
+        now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+            seconds=offset_seconds
+        )
+        return now.replace(tzinfo=None) if remove_tzinfo else now
+
+    for module in originals:
+        module.get_current_datetime = skewed_now
+
+    try:
+        yield
+    finally:
+        for module, original in originals.items():
+            module.get_current_datetime = original
+
+
+def aws_identity_preflight_ok() -> bool:
+    try:
+        import boto3
+    except Exception as exc:
+        print(f"WARNING: boto3 unavailable for AWS preflight: {exc}")
+        return False
+
+    try:
+        offset_seconds = _measure_aws_clock_offset_seconds()
+        with _patched_botocore_clock(offset_seconds):
+            identity = boto3.client("sts").get_caller_identity()
+        print(f"AWS identity OK: {identity.get('Arn', 'unknown')}")
+        return True
+    except Exception as exc:
+        print(f"WARNING: AWS STS validation failed: {exc}")
+        return False
+
+
+def _parse_s3_url(url: str) -> tuple[str, str]:
+    if not url.startswith("s3://"):
+        raise ValueError(f"Expected s3:// URL, got: {url}")
+    bucket_and_key = url[5:]
+    bucket, sep, key = bucket_and_key.partition("/")
+    if not bucket or not sep or not key:
+        raise ValueError(f"Expected full s3://bucket/key URL, got: {url}")
+    return bucket, key
+
+
+def _upload_file_to_s3(artifact: Path, target: str, offset_seconds: int) -> bool:
+    try:
+        import boto3
+    except Exception as exc:
+        print(f"WARNING: boto3 unavailable for S3 sync: {exc}")
+        return False
+
+    try:
+        bucket, key = _parse_s3_url(target)
+        with _patched_botocore_clock(offset_seconds):
+            boto3.client("s3").upload_file(str(artifact), bucket, key)
+        print(f"Synced {artifact.name} to {target}")
+        return True
+    except Exception as exc:
+        print(f"WARNING: S3 sync for {artifact.name} failed: {exc}")
+        return False
 
 
 def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -322,18 +455,11 @@ def maybe_sync_to_s3(experiment_sha: str) -> None:
         return
 
     s3_prefix = s3_prefix.rstrip("/")
+    offset_seconds = _measure_aws_clock_offset_seconds()
     for artifact in (RESULTS_TSV, RUN_LOG, RESEARCH_DIR / "event_predictor_checkpoint.pt"):
         if artifact.exists():
             target = f"{s3_prefix}/{experiment_sha}/{artifact.name}"
-            result = run(
-                ["aws", "s3", "cp", "--only-show-errors", str(artifact), target],
-                cwd=ROOT,
-                check=False,
-            )
-            if result.returncode == 0:
-                print(f"Synced {artifact.name} to {target}")
-            else:
-                _warn_command_failure(f"S3 sync for {artifact.name}", result)
+            _upload_file_to_s3(artifact, target, offset_seconds)
 
 
 def maybe_push_to_github(remote: str, branch: str) -> None:
