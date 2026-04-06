@@ -9,7 +9,7 @@ fi
 
 GITHUB_REPO_URL="${GITHUB_REPO_URL:-https://github.com/vlordier/v2e.git}"
 REPO_DIR="${REPO_DIR:-$DEFAULT_REPO_DIR}"
-BASE_BRANCH="${BASE_BRANCH:-research/apr03}"
+BASE_BRANCH="${BASE_BRANCH:-upgrades}"
 RESEARCH_BRANCH="${RESEARCH_BRANCH:-research/vastai-$(date +%b%d | tr '[:upper:]' '[:lower:]')}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 AUTORESEARCH_PLAN="${AUTORESEARCH_PLAN:-research/v2e_imu/autoresearch_plan.example.json}"
@@ -40,7 +40,9 @@ fi
 
 cd "$REPO_DIR"
 git "${GIT_AUTH[@]}" fetch origin --prune
-if git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+if git show-ref --verify --quiet "refs/remotes/origin/$RESEARCH_BRANCH"; then
+  git checkout -B "$RESEARCH_BRANCH" "origin/$RESEARCH_BRANCH"
+elif git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
   git checkout -B "$RESEARCH_BRANCH" "origin/$BASE_BRANCH"
 else
   git checkout -B "$RESEARCH_BRANCH"
