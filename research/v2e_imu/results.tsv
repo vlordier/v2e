@@ -15,3 +15,4 @@ baf3a14	0.5842	0.0	discard	TOTAL_BATCH_SIZE=2 (too noisy, batch=4 is sweet spot)
 e6832f6	0.000000	0.0	crash	Best batch-size configuration with stronger AdamW regularization. failed
 2913ad7	0.000000	0.0	crash	Retest the strongest scheduler shape on the best batch-size/LR baseline. failed
 97f5243	0.000100	1.0	discard	Retest the strongest scheduler shape on the best batch-size/LR baseline.
+e2c6037	0.000000	0.0	crash	Test mild AdamW regularization on the restored batch=4 LR=2e-3 baseline. failed
