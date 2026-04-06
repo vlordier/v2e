@@ -249,8 +249,8 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
 MODEL_TYPE = "unet"
 
 # UNet hyperparameters
-BASE_CHANNELS = 32
-IMU_HIDDEN_DIM = 192
+BASE_CHANNELS = 64
+IMU_HIDDEN_DIM = 128
 
 # FNO hyperparameters (only used when MODEL_TYPE="fno")
 FNO_MODES = 8  # Fourier modes per spatial dim
@@ -260,11 +260,11 @@ FNO_CHANNELS = 128  # Feature channels in FNO trunk
 # Training
 TOTAL_BATCH_SIZE = 4
 DEVICE_BATCH_SIZE = 4
-LEARNING_RATE = 0.00155123
+LEARNING_RATE = 0.00228975
 WEIGHT_DECAY = 1e-05
-WARMUP_RATIO = 0.0824671
-WARMDOWN_RATIO = 0.398904
-FINAL_LR_FRAC = 0.0117061
+WARMUP_RATIO = 0.139202
+WARMDOWN_RATIO = 0.418282
+FINAL_LR_FRAC = 0.01324
 
 # Evaluation
 FINAL_EVAL_BATCH_SIZE = 16

@@ -24,3 +24,4 @@ efde145	0.000100	1.6	discard	Optuna trial 511 exploring batch=8, device_batch=8,
 020882e	0.000100	1.6	discard	Optuna trial 512 exploring batch=8, device_batch=8, channels=32, imu_hidden=160, lr=0.00217983, wd=1e-05.
 2c2ae00	0.000000	0.0	skip	Optuna trial 749 exploring batch=8, device_batch=8, channels=32, imu_hidden=160, lr=0.00217983, wd=1e-05.
 359083c	0.610500	1.6	keep	Optuna trial 750 exploring batch=4, device_batch=4, channels=32, imu_hidden=192, lr=0.00155123, wd=1e-05.
+7d13976	0.624100	2.5	keep	Optuna trial 751 exploring batch=4, device_batch=4, channels=64, imu_hidden=128, lr=0.00228975, wd=1e-05.
