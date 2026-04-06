@@ -6,6 +6,31 @@ The goal is **not** to replace the current simulator, but to extend its strength
 
 ---
 
+## Prototype status (April 2026)
+
+A first **Phase 1 prototype** is now implemented directly in the repo:
+
+- soft refractory recovery
+- threshold adaptation
+- hot / bursty / row-correlated defect noise
+- scene-cut reset / suppression controls
+- CLI exposure via `v2e.py`
+- regression coverage in `test/test_v2ecore.py`
+- a reproducible synthetic comparison script in `scripts/realism_sweep.py`
+
+Current sweep snapshot from `scripts/realism_sweep.py`:
+
+| Scenario | Baseline | Experimental variant | Observed effect |
+| --- | ---: | ---: | --- |
+| `rapid-ramp` | `32000` | `3586` (`soft-refractory`) | `-88.8%` events |
+| `rapid-ramp` | `32000` | `24000` (`threshold-adapt`) | `-25.0%` events |
+| `static-hold` | `0` | `14` (`hot-pixels`) | defect activity appears on static scenes |
+| `scene-cut` | `11376` | `0` (`cut-reset`) | cut burst fully suppressed |
+
+These numbers are **sanity-check results, not calibration targets**. They show that the new knobs are active and materially changing event statistics in the intended directions.
+
+---
+
 ## Current baseline in the repo
 
 Today the main pieces are already in place:

@@ -1175,9 +1175,9 @@ class EventEmulator:
             if self.base_log_frame is None:
                 self._init(new_frame)
                 if not self.csdvs_enabled:
-                    self.base_log_frame = self.lp_log_frame
+                    self.base_log_frame = self.lp_log_frame.clone()
                 else:
-                    self.base_log_frame = self.lp_log_frame - self.cs_surround_frame
+                    self.base_log_frame = (self.lp_log_frame - self.cs_surround_frame).clone()
                 return None
 
             if self.scidvs:

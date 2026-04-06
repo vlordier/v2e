@@ -195,7 +195,7 @@ def test_soft_refractory_reduces_rapid_retriggering(device):
 
     assert events_none is not None and len(events_none) > 0
     soft_count = 0 if events_soft is None else len(events_soft)
-    assert soft_count < len(events_none)
+    assert 0 < soft_count < len(events_none)
 
 
 def test_threshold_adaptation_reduces_immediate_followup_activity(device):
@@ -216,7 +216,7 @@ def test_threshold_adaptation_reduces_immediate_followup_activity(device):
     emu_plain = EventEmulator(**common)
     emu_adapt = EventEmulator(
         **common,
-        threshold_adaptation_gain=3.0,
+        threshold_adaptation_gain=0.1,
         threshold_adaptation_tau_s=0.05,
     )
 
@@ -229,7 +229,7 @@ def test_threshold_adaptation_reduces_immediate_followup_activity(device):
 
     assert events_plain is not None and len(events_plain) > 0
     adapt_count = 0 if events_adapt is None else len(events_adapt)
-    assert adapt_count < len(events_plain)
+    assert 0 < adapt_count < len(events_plain)
 
 
 def test_hot_pixels_emit_events_on_static_frame(device):
