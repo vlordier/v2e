@@ -38,22 +38,32 @@ class FourierLayer(nn.Module):  # type: ignore[misc]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
-        x_fft = torch.fft.rfft2(x)  # (B, C, H, W//2+1) complex
+        dtype = x.dtype
 
-        x_r = x_fft[:, :, : self.modes, : self.modes].real  # (B, C, m, m)
-        x_i = x_fft[:, :, : self.modes, : self.modes].imag
+        # FFT in float32 is much more robust than ComplexHalf under CUDA autocast,
+        # and clamping the active modes avoids shape crashes on smaller feature maps.
+        x_fft = torch.fft.rfft2(x.float())  # (B, C, H, W//2+1) complex64
+        modes_h = min(self.modes, x_fft.shape[-2])
+        modes_w = min(self.modes, x_fft.shape[-1])
+        if modes_h == 0 or modes_w == 0:
+            return torch.zeros_like(x)
+
+        x_r = x_fft[:, :, :modes_h, :modes_w].real
+        x_i = x_fft[:, :, :modes_h, :modes_w].imag
+        weight_real = self.weight_real[:, :, :modes_h, :modes_w]
+        weight_imag = self.weight_imag[:, :, :modes_h, :modes_w]
 
         # Complex matrix multiply: (W_r + iW_i)(x_r + ix_i)
-        out_r = torch.einsum("oimn,bimn->bomn", self.weight_real, x_r) - torch.einsum(
-            "oimn,bimn->bomn", self.weight_imag, x_i
+        out_r = torch.einsum("oimn,bimn->bomn", weight_real, x_r) - torch.einsum(
+            "oimn,bimn->bomn", weight_imag, x_i
         )
-        out_i = torch.einsum("oimn,bimn->bomn", self.weight_real, x_i) + torch.einsum(
-            "oimn,bimn->bomn", self.weight_imag, x_r
+        out_i = torch.einsum("oimn,bimn->bomn", weight_real, x_i) + torch.einsum(
+            "oimn,bimn->bomn", weight_imag, x_r
         )
 
-        out_fft = torch.zeros_like(x_fft)
-        out_fft[:, :, : self.modes, : self.modes] = out_r + 1j * out_i
-        return torch.fft.irfft2(out_fft, s=(H, W))
+        out_fft = torch.zeros((B, C, H, x_fft.shape[-1]), dtype=x_fft.dtype, device=x.device)
+        out_fft[:, :, :modes_h, :modes_w] = out_r + 1j * out_i
+        return torch.fft.irfft2(out_fft, s=(H, W)).to(dtype=dtype)
 
 
 class FNOEventPredictor(nn.Module):  # type: ignore[misc]

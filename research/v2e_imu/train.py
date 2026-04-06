@@ -19,7 +19,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from fno_event_predictor import FNOEventPredictor
+from fno_event_predictor import FNOEventPredictor, FourierLayer
 from mlflow_utils import MlflowRunManager
 from prepare_data import (
     DATA_DIR,
@@ -472,6 +472,13 @@ def optimize_model_for_device(model: nn.Module, device: str) -> nn.Module:
         and os.getenv("V2E_TORCH_COMPILE", "1").strip().lower() not in {"0", "false", "no"}
     )
     if not compile_enabled:
+        return model
+
+    if any(isinstance(module, FourierLayer) for module in model.modules()):
+        print(
+            "torch.compile disabled for Fourier/FNO models: "
+            "current PyTorch inductor crashes on complex FFT backward"
+        )
         return model
 
     compile_mode = os.getenv("V2E_TORCH_COMPILE_MODE", "reduce-overhead")
