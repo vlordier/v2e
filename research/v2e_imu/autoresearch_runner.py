@@ -486,7 +486,11 @@ def maybe_push_to_github(remote: str, branch: str) -> None:
     git_auth = ["git", "-c", f"http.extraheader=AUTHORIZATION: basic {auth}"]
     remote_ref = f"{remote}/{branch}"
 
-    fetch_result = run([*git_auth, "fetch", remote, branch], cwd=ROOT, check=False)
+    fetch_result = run(
+        [*git_auth, "fetch", remote, f"{branch}:refs/remotes/{remote}/{branch}"],
+        cwd=ROOT,
+        check=False,
+    )
     remote_exists = (
         git("show-ref", "--verify", "--quiet", f"refs/remotes/{remote_ref}", check=False).returncode
         == 0
