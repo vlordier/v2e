@@ -33,6 +33,12 @@ BASELINE_CONSTANTS: dict[str, str] = {
     "MODEL_TYPE": '"unet"',
     "BASE_CHANNELS": "32",
     "IMU_HIDDEN_DIM": "128",
+    "FUSION_TYPE": '"film"',
+    "MODEL_FAMILY": '"balanced"',
+    "UNET_DEPTH": "3",
+    "FNO_MODES": "8",
+    "FNO_LAYERS": "4",
+    "FNO_CHANNELS": "128",
     "TOTAL_BATCH_SIZE": "4",
     "DEVICE_BATCH_SIZE": "4",
     "LEARNING_RATE": "2e-3",
@@ -91,7 +97,23 @@ class Experiment:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RunMetrics:
+    val_ap: float | None = None
+    f1_score: float | None = None
+    peak_vram_mb: float | None = None
+    samples_per_sec: float | None = None
+    total_seconds: float | None = None
+    latency_ms: float | None = None
+    quality_score: float | None = None
+    autoresearch_score: float | None = None
+
+
 DEFAULT_OPTUNA_STORAGE_URL = f"sqlite:///{(RESEARCH_DIR / 'autoresearch_optuna.db').as_posix()}"
+RESULTS_HEADER = (
+    "commit\tval_ap\tpeak_memory_gb\tstatus\tdescription\tscore\tlatency_ms"
+    "\tf1_score\tsamples_per_sec\ttotal_seconds\n"
+)
 
 
 @dataclass(frozen=True)
@@ -104,6 +126,13 @@ class OptunaConfig:
     batch_choices: tuple[str, ...] = ("4", "8", "16")
     base_channel_choices: tuple[str, ...] = ("32", "48", "64")
     imu_hidden_choices: tuple[str, ...] = ("128", "160", "192")
+    model_type_choices: tuple[str, ...] = ("unet", "fno")
+    fusion_type_choices: tuple[str, ...] = ("film", "gated", "additive")
+    model_family_choices: tuple[str, ...] = ("light", "balanced", "heavy")
+    unet_depth_choices: tuple[int, ...] = (2, 3, 4)
+    fno_mode_choices: tuple[int, ...] = (6, 8, 10)
+    fno_layer_choices: tuple[int, ...] = (2, 4, 6)
+    fno_channel_choices: tuple[int, ...] = (96, 128, 160)
     lr_low: float = 5e-4
     lr_high: float = 4e-3
 
@@ -316,25 +345,97 @@ def short_commit() -> str:
 
 def ensure_results_tsv() -> None:
     if not RESULTS_TSV.exists() or not RESULTS_TSV.read_text(encoding="utf-8").strip():
-        RESULTS_TSV.write_text(
-            "commit\tval_ap\tpeak_memory_gb\tstatus\tdescription\n",
-            encoding="utf-8",
-        )
+        RESULTS_TSV.write_text(RESULTS_HEADER, encoding="utf-8")
+        return
+
+    lines = RESULTS_TSV.read_text(encoding="utf-8").splitlines()
+    if lines and lines[0].startswith("commit\tval_ap\tpeak_memory_gb\tstatus\tdescription"):
+        if lines[0] != RESULTS_HEADER.strip():
+            lines[0] = RESULTS_HEADER.strip()
+            RESULTS_TSV.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _safe_float(value: str | None) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_result_row(line: str) -> dict[str, Any] | None:
+    parts = line.split("\t")
+    if len(parts) < 5:
+        return None
+
+    commit, val_ap, peak_memory_gb, status, description = parts[:5]
+    extras = parts[5:]
+    return {
+        "commit": commit,
+        "val_ap": _safe_float(val_ap) or 0.0,
+        "peak_memory_gb": _safe_float(peak_memory_gb) or 0.0,
+        "status": status,
+        "description": description,
+        "score": _safe_float(extras[0]) if len(extras) > 0 else None,
+        "latency_ms": _safe_float(extras[1]) if len(extras) > 1 else None,
+        "f1_score": _safe_float(extras[2]) if len(extras) > 2 else None,
+        "samples_per_sec": _safe_float(extras[3]) if len(extras) > 3 else None,
+        "total_seconds": _safe_float(extras[4]) if len(extras) > 4 else None,
+    }
+
+
+def compute_autoresearch_score(metrics: RunMetrics) -> float:
+    if metrics.autoresearch_score is not None:
+        return float(metrics.autoresearch_score)
+
+    val_ap = float(metrics.val_ap or 0.0)
+    f1_score = float(metrics.f1_score or 0.0)
+    quality_score = float(metrics.quality_score or (0.70 * val_ap + 0.30 * f1_score))
+    latency_ms = metrics.latency_ms
+    if latency_ms is None and metrics.samples_per_sec:
+        latency_ms = 1000.0 / max(metrics.samples_per_sec, 1e-6)
+    latency_score = min(1.0, 120.0 / max(float(latency_ms or 120.0), 1.0))
+    vram_gb = max(float(metrics.peak_vram_mb or 0.0) / 1024.0, 0.25)
+    vram_score = min(1.0, 4.0 / vram_gb)
+    runtime_score = min(
+        1.0,
+        DEFAULT_TIMEOUT_SECONDS / max(float(metrics.total_seconds or DEFAULT_TIMEOUT_SECONDS), 1.0),
+    )
+    efficiency_score = 0.45 * latency_score + 0.35 * vram_score + 0.20 * runtime_score
+    return float(0.85 * quality_score + 0.15 * efficiency_score)
 
 
 def best_keep_val_ap() -> float:
     ensure_results_tsv()
     best = 0.0
     for line in RESULTS_TSV.read_text(encoding="utf-8").splitlines()[1:]:
-        parts = line.split("\t")
-        if len(parts) < 5:
+        row = _parse_result_row(line)
+        if row and row["status"] == "keep":
+            best = max(best, float(row["val_ap"]))
+    return best
+
+
+def best_keep_score() -> float:
+    ensure_results_tsv()
+    best = 0.0
+    for line in RESULTS_TSV.read_text(encoding="utf-8").splitlines()[1:]:
+        row = _parse_result_row(line)
+        if not row or row["status"] != "keep":
             continue
-        _, val_ap, _, status, _ = parts[:5]
-        if status == "keep":
-            try:
-                best = max(best, float(val_ap))
-            except ValueError:
-                continue
+        score = row["score"]
+        if score is None:
+            score = compute_autoresearch_score(
+                RunMetrics(
+                    val_ap=float(row["val_ap"]),
+                    f1_score=row.get("f1_score"),
+                    peak_vram_mb=float(row["peak_memory_gb"]) * 1024.0,
+                    samples_per_sec=row.get("samples_per_sec"),
+                    total_seconds=row.get("total_seconds"),
+                    latency_ms=row.get("latency_ms"),
+                )
+            )
+        best = max(best, float(score))
     return best
 
 
@@ -342,10 +443,11 @@ def completed_experiment_descriptions() -> set[str]:
     ensure_results_tsv()
     completed: set[str] = set()
     for line in RESULTS_TSV.read_text(encoding="utf-8").splitlines()[1:]:
-        parts = line.split("\t")
-        if len(parts) < 5:
+        row = _parse_result_row(line)
+        if not row:
             continue
-        _, _, _, status, description = parts[:5]
+        status = str(row["status"])
+        description = str(row["description"])
         if status in {"keep", "discard", "crash", "skip"} and description:
             completed.add(description)
             if status == "crash" and description.endswith(" failed"):
@@ -354,12 +456,30 @@ def completed_experiment_descriptions() -> set[str]:
 
 
 def append_result(
-    commit: str, val_ap: float, peak_vram_mb: float, status: str, description: str
+    commit: str,
+    val_ap: float,
+    peak_vram_mb: float,
+    status: str,
+    description: str,
+    *,
+    score: float | None = None,
+    latency_ms: float | None = None,
+    f1_score: float | None = None,
+    samples_per_sec: float | None = None,
+    total_seconds: float | None = None,
 ) -> None:
     ensure_results_tsv()
     peak_gb = round((peak_vram_mb or 0.0) / 1024.0, 1)
+    score_str = f"{score:.6f}" if score is not None else ""
+    latency_str = f"{latency_ms:.2f}" if latency_ms is not None else ""
+    f1_str = f"{f1_score:.6f}" if f1_score is not None else ""
+    sps_str = f"{samples_per_sec:.3f}" if samples_per_sec is not None else ""
+    total_str = f"{total_seconds:.2f}" if total_seconds is not None else ""
     with RESULTS_TSV.open("a", encoding="utf-8") as handle:
-        handle.write(f"{commit}\t{val_ap:.6f}\t{peak_gb:.1f}\t{status}\t{description}\n")
+        handle.write(
+            f"{commit}\t{val_ap:.6f}\t{peak_gb:.1f}\t{status}\t{description}"
+            f"\t{score_str}\t{latency_str}\t{f1_str}\t{sps_str}\t{total_str}\n"
+        )
 
 
 def update_last_result_commit(old_sha: str, new_sha: str) -> None:
@@ -371,12 +491,26 @@ def update_last_result_commit(old_sha: str, new_sha: str) -> None:
             return
 
 
-def parse_run_metrics(log_text: str) -> tuple[float | None, float | None]:
-    val_ap_match = re.search(r"^val_ap:\s*([0-9]*\.?[0-9]+)", log_text, flags=re.MULTILINE)
-    vram_match = re.search(r"^peak_vram_mb:\s*([0-9]*\.?[0-9]+)", log_text, flags=re.MULTILINE)
-    val_ap = float(val_ap_match.group(1)) if val_ap_match else None
-    peak_vram = float(vram_match.group(1)) if vram_match else None
-    return val_ap, peak_vram
+def parse_run_metrics(log_text: str) -> RunMetrics:
+    def extract(name: str) -> float | None:
+        match = re.search(rf"^{re.escape(name)}:\s*([-+0-9.eE]+)", log_text, flags=re.MULTILINE)
+        return float(match.group(1)) if match else None
+
+    samples_per_sec = extract("samples_per_sec")
+    latency_ms = extract("latency_ms")
+    if latency_ms is None and samples_per_sec:
+        latency_ms = 1000.0 / max(samples_per_sec, 1e-6)
+
+    return RunMetrics(
+        val_ap=extract("val_ap"),
+        f1_score=extract("f1_score"),
+        peak_vram_mb=extract("peak_vram_mb"),
+        samples_per_sec=samples_per_sec,
+        total_seconds=extract("total_seconds"),
+        latency_ms=latency_ms,
+        quality_score=extract("quality_score"),
+        autoresearch_score=extract("autoresearch_score"),
+    )
 
 
 def set_constant(text: str, name: str, value_expr: str) -> str:
@@ -493,6 +627,11 @@ def load_optuna_config(path: Path | None) -> OptunaConfig:
             return default
         return tuple(str(v) for v in values)
 
+    def tuple_of_ints(values: Any, default: tuple[int, ...]) -> tuple[int, ...]:
+        if not values:
+            return default
+        return tuple(int(v) for v in values)
+
     raw_enabled = raw_config.get("enabled", env_enabled)
     enabled = (
         raw_enabled
@@ -513,6 +652,17 @@ def load_optuna_config(path: Path | None) -> OptunaConfig:
         imu_hidden_choices=tuple_of_strings(
             raw_config.get("imu_hidden_choices"), ("128", "160", "192")
         ),
+        model_type_choices=tuple_of_strings(raw_config.get("model_type_choices"), ("unet", "fno")),
+        fusion_type_choices=tuple_of_strings(
+            raw_config.get("fusion_type_choices"), ("film", "gated", "additive")
+        ),
+        model_family_choices=tuple_of_strings(
+            raw_config.get("model_family_choices"), ("light", "balanced", "heavy")
+        ),
+        unet_depth_choices=tuple_of_ints(raw_config.get("unet_depth_choices"), (2, 3, 4)),
+        fno_mode_choices=tuple_of_ints(raw_config.get("fno_mode_choices"), (6, 8, 10)),
+        fno_layer_choices=tuple_of_ints(raw_config.get("fno_layer_choices"), (2, 4, 6)),
+        fno_channel_choices=tuple_of_ints(raw_config.get("fno_channel_choices"), (96, 128, 160)),
         lr_low=float(raw_config.get("lr_low", 5e-4)),
         lr_high=float(raw_config.get("lr_high", 4e-3)),
     )
@@ -527,6 +677,8 @@ def _normalise_signature_value(value: object) -> str:
         return _format_float_literal(value)
     if isinstance(value, int) and not isinstance(value, bool):
         return str(int(value))
+    if isinstance(value, str):
+        return value.strip().strip("\"'")
     return str(value)
 
 
@@ -551,7 +703,7 @@ def build_training_env(exp: Experiment, base_env: dict[str, str] | None = None) 
     return env
 
 
-def build_optuna_experiment(
+def build_optuna_experiment(  # noqa: PLR0915
     config: OptunaConfig, completed_descriptions: set[str]
 ) -> Experiment | None:
     if not config.enabled:
@@ -597,6 +749,7 @@ def build_optuna_experiment(
         imu_hidden = int(
             trial.suggest_categorical("IMU_HIDDEN_DIM", list(config.imu_hidden_choices))
         )
+        model_type = str(trial.suggest_categorical("MODEL_TYPE", list(config.model_type_choices)))
         learning_rate = trial.suggest_float(
             "LEARNING_RATE", config.lr_low, config.lr_high, log=True
         )
@@ -606,6 +759,7 @@ def build_optuna_experiment(
         final_lr_frac = trial.suggest_float("FINAL_LR_FRAC", 0.003, 0.05, log=True)
 
         constants = {
+            "MODEL_TYPE": json.dumps(model_type),
             "TOTAL_BATCH_SIZE": str(total_batch),
             "DEVICE_BATCH_SIZE": str(device_batch),
             "BASE_CHANNELS": str(base_channels),
@@ -616,6 +770,44 @@ def build_optuna_experiment(
             "WARMDOWN_RATIO": _format_float_literal(warmdown_ratio),
             "FINAL_LR_FRAC": _format_float_literal(final_lr_frac),
         }
+
+        if model_type == "unet":
+            fusion_type = str(
+                trial.suggest_categorical("FUSION_TYPE", list(config.fusion_type_choices))
+            )
+            model_family = str(
+                trial.suggest_categorical("MODEL_FAMILY", list(config.model_family_choices))
+            )
+            unet_depth = int(
+                trial.suggest_categorical("UNET_DEPTH", list(config.unet_depth_choices))
+            )
+            constants.update(
+                {
+                    "FUSION_TYPE": json.dumps(fusion_type),
+                    "MODEL_FAMILY": json.dumps(model_family),
+                    "UNET_DEPTH": str(unet_depth),
+                }
+            )
+            arch_name = f"unet/{model_family}/{fusion_type}/d{unet_depth}"
+            arch_description = f"model={model_type}, family={model_family}, fusion={fusion_type}, depth={unet_depth}"
+        else:
+            fno_modes = int(trial.suggest_categorical("FNO_MODES", list(config.fno_mode_choices)))
+            fno_layers = int(
+                trial.suggest_categorical("FNO_LAYERS", list(config.fno_layer_choices))
+            )
+            fno_channels = int(
+                trial.suggest_categorical("FNO_CHANNELS", list(config.fno_channel_choices))
+            )
+            constants.update(
+                {
+                    "FNO_MODES": str(fno_modes),
+                    "FNO_LAYERS": str(fno_layers),
+                    "FNO_CHANNELS": str(fno_channels),
+                }
+            )
+            arch_name = f"fno/L{fno_layers}/C{fno_channels}/M{fno_modes}"
+            arch_description = f"model={model_type}, fno_layers={fno_layers}, fno_channels={fno_channels}, fno_modes={fno_modes}"
+
         signature = _constants_signature(constants)
         if signature in seen_signatures:
             study.tell(trial, 0.0, state=optuna.trial.TrialState.FAIL)
@@ -623,13 +815,13 @@ def build_optuna_experiment(
         seen_signatures.add(signature)
 
         name = (
-            f"Optuna trial {trial.number}: batch={total_batch}, dev={device_batch}, "
+            f"Optuna trial {trial.number}: {arch_name} batch={total_batch}, dev={device_batch}, "
             f"ch={base_channels}, lr={constants['LEARNING_RATE']}"
         )
         description = (
-            f"Optuna trial {trial.number} exploring batch={total_batch}, device_batch={device_batch}, "
-            f"channels={base_channels}, imu_hidden={imu_hidden}, lr={constants['LEARNING_RATE']}, "
-            f"wd={constants['WEIGHT_DECAY']}."
+            f"Optuna trial {trial.number} exploring {arch_description}, batch={total_batch}, "
+            f"device_batch={device_batch}, channels={base_channels}, imu_hidden={imu_hidden}, "
+            f"lr={constants['LEARNING_RATE']}, wd={constants['WEIGHT_DECAY']}."
         )
         if description in completed_descriptions:
             study.tell(trial, 0.0)
@@ -653,7 +845,7 @@ def build_optuna_experiment(
     return None
 
 
-def maybe_record_optuna_result(exp: Experiment, ok: bool, val_ap: float | None) -> None:
+def maybe_record_optuna_result(exp: Experiment, ok: bool, metrics: RunMetrics | None) -> None:
     if exp.search_strategy != "optuna":
         return
 
@@ -674,10 +866,10 @@ def maybe_record_optuna_result(exp: Experiment, ok: bool, val_ap: float | None) 
         storage=storage_url,
         load_if_exists=True,
     )
-    objective = float(val_ap or 0.0)
+    objective = compute_autoresearch_score(metrics or RunMetrics()) if ok else 0.0
     state = (
         optuna.trial.TrialState.COMPLETE
-        if ok and val_ap is not None
+        if ok and metrics is not None and metrics.val_ap is not None
         else optuna.trial.TrialState.FAIL
     )
     try:
@@ -761,16 +953,38 @@ def log_and_finalize(
     exp: Experiment,
     experiment_sha: str,
     ok: bool,
-    val_ap: float | None,
-    peak_vram: float | None,
+    metrics: RunMetrics,
     push: bool,
     remote: str,
     branch: str,
 ) -> None:
     best_before = best_keep_val_ap()
+    best_score_before = best_keep_score()
+    current_score = compute_autoresearch_score(metrics)
 
-    if ok and val_ap is not None and peak_vram is not None and val_ap > best_before:
-        append_result(experiment_sha, val_ap, peak_vram, "keep", exp.description)
+    keep_run = (
+        ok
+        and metrics.val_ap is not None
+        and metrics.peak_vram_mb is not None
+        and (
+            metrics.val_ap > best_before + 1e-6
+            or (current_score > best_score_before + 1e-4 and metrics.val_ap >= best_before - 0.005)
+        )
+    )
+
+    if keep_run:
+        append_result(
+            experiment_sha,
+            metrics.val_ap or 0.0,
+            metrics.peak_vram_mb or 0.0,
+            "keep",
+            exp.description,
+            score=current_score,
+            latency_ms=metrics.latency_ms,
+            f1_score=metrics.f1_score,
+            samples_per_sec=metrics.samples_per_sec,
+            total_seconds=metrics.total_seconds,
+        )
         git("add", str(RESULTS_TSV.relative_to(ROOT)))
         git("commit", "--amend", "--no-edit")
         final_sha = short_commit()
@@ -779,25 +993,42 @@ def log_and_finalize(
             git("add", str(RESULTS_TSV.relative_to(ROOT)))
             git("commit", "--amend", "--no-edit")
             experiment_sha = short_commit()
-        print(f"KEEP {experiment_sha} val_ap={val_ap:.6f} peak_vram_mb={peak_vram:.1f}")
+        print(
+            f"KEEP {experiment_sha} val_ap={metrics.val_ap:.6f} score={current_score:.4f} "
+            f"latency_ms={(metrics.latency_ms or 0.0):.2f} peak_vram_mb={(metrics.peak_vram_mb or 0.0):.1f}"
+        )
     else:
         git("reset", "--hard", "HEAD~1")
-        status = "discard" if ok and val_ap is not None else "crash"
+        status = "discard" if ok and metrics.val_ap is not None else "crash"
         description = exp.description
-        append_result(experiment_sha, val_ap or 0.0, peak_vram or 0.0, status, description)
+        append_result(
+            experiment_sha,
+            metrics.val_ap or 0.0,
+            metrics.peak_vram_mb or 0.0,
+            status,
+            description,
+            score=current_score if ok else None,
+            latency_ms=metrics.latency_ms,
+            f1_score=metrics.f1_score,
+            samples_per_sec=metrics.samples_per_sec,
+            total_seconds=metrics.total_seconds,
+        )
         message = (
-            f"chore: log discard {experiment_sha} val_ap={val_ap:.4f}"
-            if status == "discard" and val_ap is not None
+            f"chore: log discard {experiment_sha} val_ap={metrics.val_ap:.4f} score={current_score:.4f}"
+            if status == "discard" and metrics.val_ap is not None
             else f"chore: log crash {experiment_sha}"
         )
         git("add", str(RESULTS_TSV.relative_to(ROOT)))
         git("commit", "-m", message)
-        if status == "discard" and val_ap is not None:
-            print(f"DISCARD {experiment_sha} val_ap={val_ap:.6f} (best={best_before:.6f})")
+        if status == "discard" and metrics.val_ap is not None:
+            print(
+                f"DISCARD {experiment_sha} val_ap={metrics.val_ap:.6f} "
+                f"score={current_score:.4f} (best_ap={best_before:.6f}, best_score={best_score_before:.4f})"
+            )
         else:
             print(f"CRASH {experiment_sha}; see {RUN_LOG}")
 
-    maybe_record_optuna_result(exp, ok, val_ap)
+    maybe_record_optuna_result(exp, ok, metrics)
     maybe_sync_to_s3(experiment_sha)
     if push:
         maybe_push_to_github(remote, branch)
@@ -872,17 +1103,16 @@ def main() -> None:
                 experiment_sha = commit_experiment(exp)
             except NoOpExperimentError as exc:
                 append_result(short_commit(), 0.0, 0.0, "skip", exp.description)
-                maybe_record_optuna_result(exp, False, 0.0)
+                maybe_record_optuna_result(exp, False, RunMetrics())
                 print(f"SKIP {exp.name}: {exc}")
                 continue
             ok, log_text = run_training(exp, args.timeout_seconds, args.python_bin)
-            val_ap, peak_vram = parse_run_metrics(log_text)
+            metrics = parse_run_metrics(log_text)
             log_and_finalize(
                 exp,
                 experiment_sha,
                 ok,
-                val_ap,
-                peak_vram,
+                metrics,
                 args.push,
                 args.remote,
                 args.branch,
