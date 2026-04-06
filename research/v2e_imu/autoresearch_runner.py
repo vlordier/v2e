@@ -561,13 +561,7 @@ def build_optuna_experiment(
     for _ in range(max(1, config.max_generated * 4)):
         trial = study.ask()
         total_batch = int(trial.suggest_categorical("TOTAL_BATCH_SIZE", list(config.batch_choices)))
-        device_batch_choices = [int(v) for v in config.batch_choices if int(v) <= total_batch]
-        device_batch = int(
-            trial.suggest_categorical(
-                "DEVICE_BATCH_SIZE",
-                device_batch_choices or [total_batch],
-            )
-        )
+        device_batch = total_batch
         base_channels = int(
             trial.suggest_categorical("BASE_CHANNELS", list(config.base_channel_choices))
         )
