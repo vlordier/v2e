@@ -445,6 +445,27 @@ def print_progress(
     )
 
 
+def _all_finite_tensors(*values: torch.Tensor) -> bool:
+    """Return True when every tensor contains only finite values."""
+    return all(bool(torch.isfinite(value).all().item()) for value in values)
+
+
+def update_smoothed_losses(
+    smooth: dict[str, float],
+    acc: dict[str, float],
+    step: int,
+    ema: float = 0.9,
+) -> tuple[dict[str, float], float]:
+    """Update EMA loss display without letting one NaN poison later logs."""
+    debias = 1 - ema ** (step + 1)
+    if not all(math.isfinite(acc[name]) for name in smooth):
+        return smooth, debias
+
+    for name in smooth:
+        smooth[name] = ema * smooth[name] + (1 - ema) * acc[name]
+    return smooth, debias
+
+
 def _accumulate_step(
     model: nn.Module,
     batch: dict[str, Any],
@@ -452,8 +473,8 @@ def _accumulate_step(
     scaler: torch.cuda.amp.GradScaler | None,
     grad_accum_steps: int,
     rate_target: torch.Tensor,
-) -> tuple[float, float, float]:
-    """Run one micro-batch forward+backward; return (total, event, rate) losses."""
+) -> tuple[float, float, float] | None:
+    """Run one micro-batch forward+backward; return losses or None if non-finite."""
     non_blocking = device != "cpu"
     images = batch["image"].to(device, non_blocking=non_blocking)
     imu_seq = batch["imu_seq"].to(device, non_blocking=non_blocking)
@@ -468,6 +489,8 @@ def _accumulate_step(
         pred_prob = model(images, imu_seq)
 
     pred_for_loss = pred_prob.float()
+    if not _all_finite_tensors(pred_for_loss, gt_events):
+        return None
 
     # Focal BCE — primary loss (~4.6% positive pixels, alpha=0.75 upweights events)
     event_loss = focal_bce_loss(pred_for_loss, gt_events) / grad_accum_steps
@@ -478,6 +501,8 @@ def _accumulate_step(
     rate_reg = F.mse_loss(per_ch_mean, rate_target.to(dtype=per_ch_mean.dtype)) / grad_accum_steps
 
     loss = event_loss + 0.01 * rate_reg
+    if not _all_finite_tensors(event_loss, rate_reg, loss):
+        return None
 
     if scaler:
         scaler.scale(loss).backward()
@@ -487,17 +512,19 @@ def _accumulate_step(
     return loss.item(), event_loss.item(), rate_reg.item()
 
 
-def run_training_loop(
+def run_training_loop(  # noqa: C901, PLR0912, PLR0915
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     train_loader: DataLoader,
     device: str,
     grad_accum_steps: int = 8,
-) -> tuple[float, int]:
+) -> tuple[float, int, int, int]:
     """Run the training loop."""
     total_training_time = 0.0
     step = 0
     smooth: dict[str, float] = {"total": 0.0, "evt": 0.0, "rate": 0.0}
+    skipped_micro_batches = 0
+    skipped_optimizer_steps = 0
 
     scaler = torch.amp.GradScaler(device="cuda") if device == "cuda" else None
     # Pre-allocate rate target once to avoid per-step tensor creation
@@ -509,6 +536,7 @@ def run_training_loop(
         t0 = time.time()
         optimizer.zero_grad(set_to_none=True)
         acc = {"total": 0.0, "evt": 0.0, "rate": 0.0}
+        valid_micro_batches = 0
 
         for _ in range(grad_accum_steps):
             try:
@@ -517,29 +545,57 @@ def run_training_loop(
                 train_iter = iter(train_loader)
                 batch = next(train_iter)
 
-            total, evt, rate = _accumulate_step(
-                model, batch, device, scaler, grad_accum_steps, rate_target
-            )
+            losses = _accumulate_step(model, batch, device, scaler, grad_accum_steps, rate_target)
+            if losses is None:
+                skipped_micro_batches += 1
+                if skipped_micro_batches <= 3 or skipped_micro_batches % 10 == 0:
+                    print(
+                        f"\nWARNING: skipped non-finite micro-batch at step {step} "
+                        f"(count={skipped_micro_batches})",
+                        flush=True,
+                    )
+                continue
+
+            total, evt, rate = losses
+            valid_micro_batches += 1
             acc["total"] += total
             acc["evt"] += evt
             acc["rate"] += rate
 
-        if scaler:
-            scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        if scaler:
-            scaler.step(optimizer)
-            scaler.update()
+        if valid_micro_batches > 0:
+            if scaler:
+                scaler.unscale_(optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), max_norm=1.0, error_if_nonfinite=False
+            )
+            if math.isfinite(float(grad_norm)):
+                if scaler:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+            else:
+                skipped_optimizer_steps += 1
+                optimizer.zero_grad(set_to_none=True)
+                if scaler:
+                    scaler.update()
+                if skipped_optimizer_steps <= 3 or skipped_optimizer_steps % 10 == 0:
+                    print(
+                        f"\nWARNING: skipped optimizer step {step} because gradients became "
+                        "non-finite",
+                        flush=True,
+                    )
         else:
-            optimizer.step()
+            skipped_optimizer_steps += 1
 
         dt = time.time() - t0
         total_training_time += dt
 
-        ema = 0.9
-        debias = 1 - ema ** (step + 1)
-        for k in smooth:
-            smooth[k] = ema * smooth[k] + (1 - ema) * acc[k]
+        smooth, debias = update_smoothed_losses(
+            smooth,
+            acc if valid_micro_batches > 0 else {k: float("nan") for k in smooth},
+            step,
+        )
 
         progress = min(total_training_time / TIME_BUDGET, 1.0)
         lrm = get_lr_multiplier(progress)
@@ -562,7 +618,7 @@ def run_training_loop(
             break
 
     print()
-    return total_training_time, step
+    return total_training_time, step, skipped_micro_batches, skipped_optimizer_steps
 
 
 def print_results(
@@ -573,6 +629,8 @@ def print_results(
     num_params: int,
     peak_vram_mb: float,
     physics_metrics: dict[str, float] | None = None,
+    skipped_micro_batches: int = 0,
+    skipped_optimizer_steps: int = 0,
 ) -> None:
     """Print final results."""
     print("---")
@@ -595,6 +653,8 @@ def print_results(
     print(f"peak_vram_mb: {peak_vram_mb:.1f}")
     print(f"samples_per_sec: {eval_metrics['samples_per_sec']:.1f}")
     print(f"num_steps: {num_steps}")
+    print(f"skipped_micro_batches: {skipped_micro_batches}")
+    print(f"skipped_optimizer_steps: {skipped_optimizer_steps}")
     print(f"num_params_M: {num_params / 1e6:.2f}")
     print(f"base_channels: {BASE_CHANNELS}")
     print(f"imu_hidden_dim: {IMU_HIDDEN_DIM}")
@@ -731,9 +791,12 @@ def train(resume_from: str | None = None) -> None:  # noqa: PLR0915
             print(f"Resuming from epoch {start_epoch}")
 
         t_start = time.time()
-        total_training_time, num_steps = run_training_loop(
-            model, optimizer, train_loader, device, grad_accum_steps
-        )
+        (
+            total_training_time,
+            num_steps,
+            skipped_micro_batches,
+            skipped_optimizer_steps,
+        ) = run_training_loop(model, optimizer, train_loader, device, grad_accum_steps)
 
         t_train = time.time()
         print(f"Training completed in {t_train - t_start:.1f}s")
@@ -770,6 +833,8 @@ def train(resume_from: str | None = None) -> None:  # noqa: PLR0915
             num_params,
             peak_vram_mb,
             physics_metrics,
+            skipped_micro_batches,
+            skipped_optimizer_steps,
         )
 
         mlflow_run.set_tags({"run.status": "finished"})
@@ -789,6 +854,8 @@ def train(resume_from: str | None = None) -> None:  # noqa: PLR0915
                 "peak_vram_mb": peak_vram_mb,
                 "num_steps": float(num_steps),
                 "num_params_m": num_params / 1e6,
+                "skipped_micro_batches": float(skipped_micro_batches),
+                "skipped_optimizer_steps": float(skipped_optimizer_steps),
             },
             step=num_steps,
         )
