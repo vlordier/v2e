@@ -3,44 +3,69 @@
     "enabled": true,
     "study_name": "v2e-imu-autoresearch",
     "max_generated": 1,
-    "batch_choices": ["4", "8", "16"],
-    "base_channel_choices": ["32", "48", "64"],
+    "batch_choices": ["8", "16", "24"],
+    "base_channel_choices": ["40", "48", "56", "64"],
     "imu_hidden_choices": ["128", "160", "192"],
     "model_type_choices": ["unet", "fno"],
-    "fusion_type_choices": ["film", "gated", "additive"],
-    "model_family_choices": ["light", "balanced", "heavy"],
-    "unet_depth_choices": [2, 3, 4],
-    "fno_mode_choices": [6, 8, 10],
-    "fno_layer_choices": [2, 4, 6],
-    "fno_channel_choices": [96, 128, 160],
-    "lr_low": 0.0005,
-    "lr_high": 0.004
+    "fusion_type_choices": ["additive", "gated", "film"],
+    "model_family_choices": ["balanced", "heavy", "light"],
+    "unet_depth_choices": [2, 3],
+    "fno_mode_choices": [4, 6, 8],
+    "fno_layer_choices": [1, 2, 4],
+    "fno_channel_choices": [64, 96, 128],
+    "lr_low": 0.0004,
+    "lr_high": 0.002
   },
   "experiments": [
     {
-      "name": "AdamW weight_decay=1e-4 on restored baseline",
-      "description": "Test mild AdamW regularization on the restored batch=4 LR=2e-3 baseline.",
-      "commit_message": "probe: AdamW weight_decay=1e-4",
+      "name": "Exploit heavy additive d3 @ batch24",
+      "description": "Push the current best heavy/additive depth-3 U-Net harder with a larger batch to improve throughput without giving away AP.",
+      "commit_message": "probe: heavy additive d3 batch24",
       "constants": {
-        "WEIGHT_DECAY": "1e-4"
+        "MODEL_TYPE": "\"unet\"",
+        "BASE_CHANNELS": "48",
+        "IMU_HIDDEN_DIM": "128",
+        "FUSION_TYPE": "\"additive\"",
+        "MODEL_FAMILY": "\"heavy\"",
+        "UNET_DEPTH": "3",
+        "TOTAL_BATCH_SIZE": "24",
+        "DEVICE_BATCH_SIZE": "24",
+        "LEARNING_RATE": "8e-4",
+        "WEIGHT_DECAY": "1e-5"
       }
     },
     {
-      "name": "Scheduler warmup 5% warmdown 50% on restored baseline",
-      "description": "Retest the strongest scheduler shape on the restored batch=4 LR=2e-3 baseline.",
-      "commit_message": "probe: warmup 5% warmdown 50% restored baseline",
+      "name": "Probe heavy gated d3 @ batch24",
+      "description": "Check whether gated fusion can match additive quality while using the same high-throughput heavy depth-3 backbone.",
+      "commit_message": "probe: heavy gated d3 batch24",
       "constants": {
-        "WARMUP_RATIO": "0.05",
-        "WARMDOWN_RATIO": "0.5",
-        "FINAL_LR_FRAC": "0.01"
+        "MODEL_TYPE": "\"unet\"",
+        "BASE_CHANNELS": "48",
+        "IMU_HIDDEN_DIM": "160",
+        "FUSION_TYPE": "\"gated\"",
+        "MODEL_FAMILY": "\"heavy\"",
+        "UNET_DEPTH": "3",
+        "TOTAL_BATCH_SIZE": "24",
+        "DEVICE_BATCH_SIZE": "24",
+        "LEARNING_RATE": "7e-4",
+        "WEIGHT_DECAY": "1e-5"
       }
     },
     {
-      "name": "LR 2.5e-3 on restored baseline",
-      "description": "Test a slightly faster LR on the best batch=4 configuration.",
-      "commit_message": "probe: LR 2.5e-3 on batch=4 baseline",
+      "name": "Re-open lean FNO L2/C64/M4",
+      "description": "Now that the FNO path is stable, retry a lean low-mode FNO branch to test whether a smaller spectral model can stay competitive on accuracy-per-latency.",
+      "commit_message": "probe: lean FNO L2 C64 M4",
       "constants": {
-        "LEARNING_RATE": "2.5e-3"
+        "MODEL_TYPE": "\"fno\"",
+        "BASE_CHANNELS": "48",
+        "IMU_HIDDEN_DIM": "128",
+        "FNO_MODES": "4",
+        "FNO_LAYERS": "2",
+        "FNO_CHANNELS": "64",
+        "TOTAL_BATCH_SIZE": "16",
+        "DEVICE_BATCH_SIZE": "16",
+        "LEARNING_RATE": "7e-4",
+        "WEIGHT_DECAY": "1e-5"
       }
     }
   ]
