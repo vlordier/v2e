@@ -50,3 +50,4 @@ aa13707	0.656400	3.4	discard	Optuna trial 775 exploring model=unet, family=balan
 d7804d0	0.000000	0.0	crash	Optuna trial 776 exploring model=fno, fno_layers=2, fno_channels=96, fno_modes=10, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000851519, wd=0.					
 e645af1	0.000000	0.0	crash	Optuna trial 777 exploring model=fno, fno_layers=4, fno_channels=96, fno_modes=10, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.00091426, wd=0.					
 bc0ebe9	0.000000	0.0	crash	Optuna trial 778 exploring model=fno, fno_layers=2, fno_channels=96, fno_modes=6, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000916762, wd=0.					
+8589ae2	0.000000	0.0	crash	Optuna trial 779 exploring model=fno, fno_layers=4, fno_channels=96, fno_modes=10, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000926621, wd=0.					
