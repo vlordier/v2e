@@ -178,7 +178,7 @@ class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
             if self.fusion_type == "none":
                 modulated.append(f)
             elif self.fusion_type == "additive":
-                modulated.append(f + bias)
+                modulated.append(f * scale + bias)
             elif self.fusion_type == "gated":
                 gate = torch.sigmoid(scale + 4.0)
                 modulated.append(f * gate + bias)
@@ -300,25 +300,25 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
 MODEL_TYPE = "unet"
 
 # UNet / fusion architecture search knobs
-BASE_CHANNELS = 32
+BASE_CHANNELS = 64
 IMU_HIDDEN_DIM = 128
-FUSION_TYPE = "film"  # film | gated | additive | none
-MODEL_FAMILY = "balanced"  # light | balanced | heavy
+FUSION_TYPE = "additive"
+MODEL_FAMILY = "heavy"
 UNET_DEPTH = 3
 
 # FNO hyperparameters (only used when MODEL_TYPE="fno")
-FNO_MODES = 8  # Fourier modes per spatial dim
-FNO_LAYERS = 4  # Number of FNO+FiLM blocks
-FNO_CHANNELS = 128  # Feature channels in FNO trunk
+FNO_MODES = 8
+FNO_LAYERS = 4
+FNO_CHANNELS = 128
 
 # Training
-TOTAL_BATCH_SIZE = 4
-DEVICE_BATCH_SIZE = 4
-LEARNING_RATE = 2e-3
-WEIGHT_DECAY = 0.0
-WARMUP_RATIO = 0.1
-WARMDOWN_RATIO = 0.3
-FINAL_LR_FRAC = 0.01
+TOTAL_BATCH_SIZE = 16
+DEVICE_BATCH_SIZE = 16
+LEARNING_RATE = 0.000516624
+WEIGHT_DECAY = 0.0003
+WARMUP_RATIO = 0.114147
+WARMDOWN_RATIO = 0.590432
+FINAL_LR_FRAC = 0.00406165
 
 # Evaluation
 FINAL_EVAL_BATCH_SIZE = 16
