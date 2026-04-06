@@ -25,6 +25,7 @@ RESULTS_TSV = RESEARCH_DIR / "results.tsv"
 RUN_LOG = RESEARCH_DIR / "run.log"
 DEFAULT_ENV_FILE = RESEARCH_DIR / ".env.vastai.local"
 DEFAULT_TIMEOUT_SECONDS = 1200
+DEFAULT_PLAN_POLL_SECONDS = 300
 DEFAULT_REMOTE = "origin"
 DEFAULT_PYTHON = sys.executable
 
@@ -306,6 +307,19 @@ def best_keep_val_ap() -> float:
     return best
 
 
+def completed_experiment_descriptions() -> set[str]:
+    ensure_results_tsv()
+    completed: set[str] = set()
+    for line in RESULTS_TSV.read_text(encoding="utf-8").splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        _, _, _, status, description = parts[:5]
+        if status in {"keep", "discard", "crash"} and description:
+            completed.add(description)
+    return completed
+
+
 def append_result(
     commit: str, val_ap: float, peak_vram_mb: float, status: str, description: str
 ) -> None:
@@ -469,22 +483,31 @@ def maybe_push_to_github(remote: str, branch: str) -> None:
         return
 
     auth = base64.b64encode(f"x-access-token:{token}".encode()).decode("ascii")
-    result = run(
-        [
-            "git",
-            "-c",
-            f"http.extraheader=AUTHORIZATION: basic {auth}",
-            "push",
-            remote,
-            f"HEAD:{branch}",
-        ],
-        cwd=ROOT,
-        check=False,
+    git_auth = ["git", "-c", f"http.extraheader=AUTHORIZATION: basic {auth}"]
+    remote_ref = f"{remote}/{branch}"
+
+    fetch_result = run([*git_auth, "fetch", remote, branch], cwd=ROOT, check=False)
+    remote_exists = (
+        git("show-ref", "--verify", "--quiet", f"refs/remotes/{remote_ref}", check=False).returncode
+        == 0
     )
-    if result.returncode == 0:
+    if fetch_result.returncode != 0 and remote_exists:
+        _warn_command_failure(f"git fetch {remote}/{branch}", fetch_result)
+
+    if remote_exists:
+        ancestor_check = git("merge-base", "--is-ancestor", remote_ref, "HEAD", check=False)
+        if ancestor_check.returncode != 0:
+            rebase_result = run([*git_auth, "rebase", remote_ref], cwd=ROOT, check=False)
+            if rebase_result.returncode != 0:
+                _warn_command_failure(f"git rebase {remote_ref}", rebase_result)
+                git("rebase", "--abort", check=False)
+                return
+
+    push_result = run([*git_auth, "push", remote, f"HEAD:{branch}"], cwd=ROOT, check=False)
+    if push_result.returncode == 0:
         print(f"Pushed latest result to {remote}/{branch}")
     else:
-        _warn_command_failure(f"git push to {remote}/{branch}", result)
+        _warn_command_failure(f"git push to {remote}/{branch}", push_result)
 
 
 def log_and_finalize(
@@ -554,6 +577,12 @@ def main() -> None:
     parser.add_argument("--remote", default=os.getenv("GITHUB_REMOTE", DEFAULT_REMOTE))
     parser.add_argument("--branch", default=default_branch_name())
     parser.add_argument(
+        "--plan-poll-seconds",
+        type=int,
+        default=int(os.getenv("PLAN_POLL_SECONDS", str(DEFAULT_PLAN_POLL_SECONDS))),
+        help="Seconds to sleep before re-checking the plan for new work. Set to 0 to exit once the current plan is exhausted.",
+    )
+    parser.add_argument(
         "--push", action="store_true", help="Push results back to GitHub after each run."
     )
     args = parser.parse_args(remaining)
@@ -565,19 +594,43 @@ def main() -> None:
     if current_branch() != args.branch:
         print(f"Using branch {current_branch()} (push target {args.branch})")
 
-    experiments = load_plan(args.plan)
-    if not experiments:
-        raise SystemExit("No experiments found in the plan.")
+    while True:
+        experiments = load_plan(args.plan)
+        if not experiments:
+            raise SystemExit("No experiments found in the plan.")
 
-    for exp in experiments:
-        print(f"=== Running experiment: {exp.name} ===")
-        apply_experiment(exp)
-        experiment_sha = commit_experiment(exp)
-        ok, log_text = run_training(exp, args.timeout_seconds, args.python_bin)
-        val_ap, peak_vram = parse_run_metrics(log_text)
-        log_and_finalize(
-            exp, experiment_sha, ok, val_ap, peak_vram, args.push, args.remote, args.branch
-        )
+        completed = completed_experiment_descriptions()
+        pending = [exp for exp in experiments if exp.description not in completed]
+
+        if not pending:
+            if args.plan_poll_seconds <= 0:
+                print("No pending experiments in the plan. Exiting.")
+                break
+            print(
+                f"No pending experiments in the plan; sleeping {args.plan_poll_seconds}s before retrying."
+            )
+            time.sleep(args.plan_poll_seconds)
+            continue
+
+        for exp in pending:
+            print(f"=== Running experiment: {exp.name} ===")
+            apply_experiment(exp)
+            experiment_sha = commit_experiment(exp)
+            ok, log_text = run_training(exp, args.timeout_seconds, args.python_bin)
+            val_ap, peak_vram = parse_run_metrics(log_text)
+            log_and_finalize(
+                exp,
+                experiment_sha,
+                ok,
+                val_ap,
+                peak_vram,
+                args.push,
+                args.remote,
+                args.branch,
+            )
+
+        if args.plan_poll_seconds <= 0:
+            break
 
 
 if __name__ == "__main__":
