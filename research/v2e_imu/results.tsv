@@ -46,3 +46,4 @@ c419249	0.463500	3.5	discard	Optuna trial 769 exploring model=unet, family=heavy
 e72bc15	0.655900	3.4	discard	Optuna trial 771 exploring model=unet, family=balanced, fusion=film, depth=3, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.00114929, wd=0.	0.694900	59.37	0.620600	16.800	917.30
 7e8faeb	0.625000	3.4	discard	Optuna trial 773 exploring model=unet, family=light, fusion=gated, depth=2, batch=16, device_batch=16, channels=48, imu_hidden=192, lr=0.00100204, wd=0.	0.676000	23.64	0.610600	42.300	909.70
 a128978	0.662600	3.4	keep	Optuna trial 774 exploring model=unet, family=balanced, fusion=film, depth=3, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.00117938, wd=0.	0.699400	23.41	0.622900	42.700	909.70
+aa13707	0.656400	3.4	discard	Optuna trial 775 exploring model=unet, family=balanced, fusion=film, depth=3, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.0012712, wd=0.	0.695100	23.89	0.619800	41.900	910.10
