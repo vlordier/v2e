@@ -87,6 +87,25 @@ class Experiment:
     commit_message: str
     constants: dict[str, str] = field(default_factory=dict)
     replacements: tuple[Replacement, ...] = ()
+    search_strategy: str = "plan"
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+DEFAULT_OPTUNA_STORAGE_URL = f"sqlite:///{(RESEARCH_DIR / 'autoresearch_optuna.db').as_posix()}"
+
+
+@dataclass(frozen=True)
+class OptunaConfig:
+    enabled: bool = True
+    study_name: str = "v2e-imu-autoresearch"
+    storage_url: str = DEFAULT_OPTUNA_STORAGE_URL
+    max_generated: int = 1
+    sampler_seed: int = 42
+    batch_choices: tuple[str, ...] = ("4", "8", "16")
+    base_channel_choices: tuple[str, ...] = ("32", "48", "64")
+    imu_hidden_choices: tuple[str, ...] = ("128", "160", "192")
+    lr_low: float = 5e-4
+    lr_high: float = 4e-3
 
 
 class NoOpExperimentError(RuntimeError):
@@ -329,6 +348,8 @@ def completed_experiment_descriptions() -> set[str]:
         _, _, _, status, description = parts[:5]
         if status in {"keep", "discard", "crash", "skip"} and description:
             completed.add(description)
+            if status == "crash" and description.endswith(" failed"):
+                completed.add(description[: -len(" failed")])
     return completed
 
 
@@ -421,13 +442,14 @@ def commit_experiment(exp: Experiment) -> str:
     return short_commit()
 
 
-def load_plan(path: Path | None) -> list[Experiment]:
-    raw_plan: Any
+def _load_plan_payload(path: Path | None) -> Any:
     if path is not None and path.exists():
-        raw_plan = json.loads(path.read_text(encoding="utf-8"))
-    else:
-        raw_plan = DEFAULT_PLAN
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {"experiments": DEFAULT_PLAN}
 
+
+def load_plan(path: Path | None) -> list[Experiment]:
+    raw_plan = _load_plan_payload(path)
     experiments_data = (
         raw_plan.get("experiments", raw_plan) if isinstance(raw_plan, dict) else raw_plan
     )
@@ -449,14 +471,194 @@ def load_plan(path: Path | None) -> list[Experiment]:
                 commit_message=item.get("commit_message", f"probe: {item['name']}"),
                 constants=dict(item.get("constants", {})),
                 replacements=replacements,
+                search_strategy=item.get("search_strategy", "plan"),
+                metadata={str(k): str(v) for k, v in item.get("metadata", {}).items()},
             )
         )
     return experiments
 
 
-def run_training(exp: Experiment, timeout_seconds: int, python_bin: str) -> tuple[bool, str]:
-    env = os.environ.copy()
+def load_optuna_config(path: Path | None) -> OptunaConfig:
+    raw_plan = _load_plan_payload(path)
+    raw_config = raw_plan.get("optuna", {}) if isinstance(raw_plan, dict) else {}
+
+    env_enabled = os.getenv("AUTORESEARCH_OPTUNA_ENABLED", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+    def tuple_of_strings(values: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+        if not values:
+            return default
+        return tuple(str(v) for v in values)
+
+    raw_enabled = raw_config.get("enabled", env_enabled)
+    enabled = (
+        raw_enabled
+        if isinstance(raw_enabled, bool)
+        else str(raw_enabled).strip().lower() not in {"0", "false", "no"}
+    )
+
+    return OptunaConfig(
+        enabled=enabled,
+        study_name=str(raw_config.get("study_name", "v2e-imu-autoresearch")),
+        storage_url=str(raw_config.get("storage_url", DEFAULT_OPTUNA_STORAGE_URL)),
+        max_generated=max(1, int(raw_config.get("max_generated", 1))),
+        sampler_seed=int(raw_config.get("sampler_seed", 42)),
+        batch_choices=tuple_of_strings(raw_config.get("batch_choices"), ("4", "8", "16")),
+        base_channel_choices=tuple_of_strings(
+            raw_config.get("base_channel_choices"), ("32", "48", "64")
+        ),
+        imu_hidden_choices=tuple_of_strings(
+            raw_config.get("imu_hidden_choices"), ("128", "160", "192")
+        ),
+        lr_low=float(raw_config.get("lr_low", 5e-4)),
+        lr_high=float(raw_config.get("lr_high", 4e-3)),
+    )
+
+
+def _format_float_literal(value: float) -> str:
+    return f"{value:.6g}"
+
+
+def build_training_env(exp: Experiment, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(base_env or os.environ.copy())
     env.setdefault("MLFLOW_RUN_NAME", exp.name)
+    env["AUTORESEARCH_EXPERIMENT_NAME"] = exp.name
+    env["AUTORESEARCH_EXPERIMENT_DESCRIPTION"] = exp.description
+    env["AUTORESEARCH_SEARCH_KIND"] = exp.search_strategy
+
+    trial_number = exp.metadata.get("trial_number", "")
+    if trial_number:
+        env["AUTORESEARCH_TRIAL_NUMBER"] = trial_number
+    else:
+        env.pop("AUTORESEARCH_TRIAL_NUMBER", None)
+    return env
+
+
+def build_optuna_experiment(
+    config: OptunaConfig, completed_descriptions: set[str]
+) -> Experiment | None:
+    if not config.enabled:
+        return None
+
+    try:
+        import optuna
+    except Exception as exc:
+        print(f"WARNING: Optuna not available; skipping generated experiments: {exc}")
+        return None
+
+    sampler = optuna.samplers.TPESampler(seed=config.sampler_seed)
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=config.study_name,
+        storage=config.storage_url,
+        load_if_exists=True,
+        sampler=sampler,
+    )
+
+    for _ in range(max(1, config.max_generated * 4)):
+        trial = study.ask()
+        total_batch = int(trial.suggest_categorical("TOTAL_BATCH_SIZE", list(config.batch_choices)))
+        device_batch_choices = [int(v) for v in config.batch_choices if int(v) <= total_batch]
+        device_batch = int(
+            trial.suggest_categorical(
+                "DEVICE_BATCH_SIZE",
+                device_batch_choices or [total_batch],
+            )
+        )
+        base_channels = int(
+            trial.suggest_categorical("BASE_CHANNELS", list(config.base_channel_choices))
+        )
+        imu_hidden = int(
+            trial.suggest_categorical("IMU_HIDDEN_DIM", list(config.imu_hidden_choices))
+        )
+        learning_rate = trial.suggest_float(
+            "LEARNING_RATE", config.lr_low, config.lr_high, log=True
+        )
+        weight_decay = trial.suggest_categorical("WEIGHT_DECAY", [0.0, 1e-5, 1e-4, 3e-4])
+        warmup_ratio = trial.suggest_float("WARMUP_RATIO", 0.03, 0.15)
+        warmdown_ratio = trial.suggest_float("WARMDOWN_RATIO", 0.2, 0.6)
+        final_lr_frac = trial.suggest_float("FINAL_LR_FRAC", 0.003, 0.05, log=True)
+
+        constants = {
+            "TOTAL_BATCH_SIZE": str(total_batch),
+            "DEVICE_BATCH_SIZE": str(device_batch),
+            "BASE_CHANNELS": str(base_channels),
+            "IMU_HIDDEN_DIM": str(imu_hidden),
+            "LEARNING_RATE": _format_float_literal(learning_rate),
+            "WEIGHT_DECAY": _format_float_literal(weight_decay),
+            "WARMUP_RATIO": _format_float_literal(warmup_ratio),
+            "WARMDOWN_RATIO": _format_float_literal(warmdown_ratio),
+            "FINAL_LR_FRAC": _format_float_literal(final_lr_frac),
+        }
+        name = (
+            f"Optuna trial {trial.number}: batch={total_batch}, dev={device_batch}, "
+            f"ch={base_channels}, lr={constants['LEARNING_RATE']}"
+        )
+        description = (
+            f"Optuna trial {trial.number} exploring batch={total_batch}, device_batch={device_batch}, "
+            f"channels={base_channels}, imu_hidden={imu_hidden}, lr={constants['LEARNING_RATE']}, "
+            f"wd={constants['WEIGHT_DECAY']}."
+        )
+        if description in completed_descriptions:
+            study.tell(trial, 0.0)
+            continue
+
+        trial.set_user_attr("name", name)
+        trial.set_user_attr("description", description)
+        return Experiment(
+            name=name,
+            description=description,
+            commit_message=f"probe: optuna trial {trial.number}",
+            constants=constants,
+            search_strategy="optuna",
+            metadata={
+                "trial_number": str(trial.number),
+                "study_name": config.study_name,
+                "storage_url": config.storage_url,
+            },
+        )
+
+    return None
+
+
+def maybe_record_optuna_result(exp: Experiment, ok: bool, val_ap: float | None) -> None:
+    if exp.search_strategy != "optuna":
+        return
+
+    try:
+        import optuna
+    except Exception:
+        return
+
+    trial_number_raw = exp.metadata.get("trial_number")
+    storage_url = exp.metadata.get("storage_url")
+    study_name = exp.metadata.get("study_name")
+    if not trial_number_raw or not storage_url or not study_name:
+        return
+
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=study_name,
+        storage=storage_url,
+        load_if_exists=True,
+    )
+    objective = float(val_ap or 0.0)
+    state = (
+        optuna.trial.TrialState.COMPLETE
+        if ok and val_ap is not None
+        else optuna.trial.TrialState.FAIL
+    )
+    try:
+        study.tell(int(trial_number_raw), objective, state=state)
+    except ValueError:
+        pass
+
+
+def run_training(exp: Experiment, timeout_seconds: int, python_bin: str) -> tuple[bool, str]:
+    env = build_training_env(exp)
     with RUN_LOG.open("w", encoding="utf-8") as handle:
         try:
             result = run(
@@ -552,7 +754,7 @@ def log_and_finalize(
     else:
         git("reset", "--hard", "HEAD~1")
         status = "discard" if ok and val_ap is not None else "crash"
-        description = exp.description if status == "discard" else f"{exp.description} failed"
+        description = exp.description
         append_result(experiment_sha, val_ap or 0.0, peak_vram or 0.0, status, description)
         message = (
             f"chore: log discard {experiment_sha} val_ap={val_ap:.4f}"
@@ -566,6 +768,7 @@ def log_and_finalize(
         else:
             print(f"CRASH {experiment_sha}; see {RUN_LOG}")
 
+    maybe_record_optuna_result(exp, ok, val_ap)
     maybe_sync_to_s3(experiment_sha)
     if push:
         maybe_push_to_github(remote, branch)
@@ -612,11 +815,16 @@ def main() -> None:
 
     while True:
         experiments = load_plan(args.plan)
-        if not experiments:
-            raise SystemExit("No experiments found in the plan.")
+        optuna_config = load_optuna_config(args.plan)
 
         completed = completed_experiment_descriptions()
         pending = [exp for exp in experiments if exp.description not in completed]
+
+        if not pending:
+            generated = build_optuna_experiment(optuna_config, completed)
+            if generated is not None:
+                pending = [generated]
+                print(f"Generated new Optuna trial: {generated.name}")
 
         if not pending:
             if args.plan_poll_seconds <= 0:
@@ -629,7 +837,7 @@ def main() -> None:
             continue
 
         for exp in pending:
-            print(f"=== Running experiment: {exp.name} ===")
+            print(f"=== Running experiment [{exp.search_strategy}]: {exp.name} ===")
             apply_experiment(exp)
             try:
                 experiment_sha = commit_experiment(exp)

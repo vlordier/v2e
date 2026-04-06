@@ -715,7 +715,7 @@ def make_dataloader(
     batch_size: int,
     seq_len: int = MAX_SEQ_LEN,
     image_size: tuple[int, int] = IMAGE_SIZE,
-    num_workers: int = 2,
+    num_workers: int | None = None,
     imu_stats: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> DataLoader:
     """Create a dataloader for the given split.
@@ -731,7 +731,20 @@ def make_dataloader(
         imu_stats=imu_stats,
     )
 
-    safe_num_workers = 0 if sys.platform == "darwin" else num_workers
+    if num_workers is None:
+        if sys.platform == "darwin":
+            requested_workers = 0
+        else:
+            cpu_count = os.cpu_count() or 4
+            if torch.cuda.is_available():
+                requested_workers = min(8, max(4, cpu_count // 2))
+            else:
+                requested_workers = min(4, max(1, cpu_count // 4))
+            requested_workers = int(os.getenv("DATALOADER_WORKERS", requested_workers))
+    else:
+        requested_workers = num_workers
+
+    safe_num_workers = 0 if sys.platform == "darwin" else max(0, requested_workers)
 
     return DataLoader(
         dataset,
