@@ -39,6 +39,8 @@ if [ ! -d "$REPO_DIR/.git" ]; then
 fi
 
 cd "$REPO_DIR"
+# Persist GitHub auth for later git fetch/push commands in this repo.
+git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ${AUTH_HEADER}"
 git "${GIT_AUTH[@]}" fetch origin --prune
 git "${GIT_AUTH[@]}" fetch origin "$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" || true
 git "${GIT_AUTH[@]}" fetch origin "$RESEARCH_BRANCH:refs/remotes/origin/$RESEARCH_BRANCH" || true
@@ -103,6 +105,14 @@ if [ -n "$EXISTING_PIDS" ]; then
   echo "[bootstrap] stopping existing autoresearch runner(s): $EXISTING_PIDS"
   # shellcheck disable=SC2086
   kill $EXISTING_PIDS || true
+  sleep 2
+fi
+
+TRAIN_PIDS="$(pgrep -f '(^|/).venv/bin/python train.py|python train.py' || true)"
+if [ -n "$TRAIN_PIDS" ]; then
+  echo "[bootstrap] stopping existing training job(s): $TRAIN_PIDS"
+  # shellcheck disable=SC2086
+  kill $TRAIN_PIDS || true
   sleep 2
 fi
 
