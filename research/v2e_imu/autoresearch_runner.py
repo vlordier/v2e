@@ -114,6 +114,18 @@ def run(
     )
 
 
+def _warn_command_failure(action: str, result: subprocess.CompletedProcess[str]) -> None:
+    if result.returncode == 0:
+        return
+    detail = (result.stderr or result.stdout or "").strip().replace("\n", " | ")
+    if detail:
+        if len(detail) > 400:
+            detail = detail[:400] + "…"
+        print(f"WARNING: {action} failed (exit {result.returncode}): {detail}")
+    else:
+        print(f"WARNING: {action} failed (exit {result.returncode})")
+
+
 def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return run(["git", *args], cwd=ROOT, check=check)
 
@@ -313,7 +325,15 @@ def maybe_sync_to_s3(experiment_sha: str) -> None:
     for artifact in (RESULTS_TSV, RUN_LOG, RESEARCH_DIR / "event_predictor_checkpoint.pt"):
         if artifact.exists():
             target = f"{s3_prefix}/{experiment_sha}/{artifact.name}"
-            run(["aws", "s3", "cp", str(artifact), target], cwd=ROOT, check=False)
+            result = run(
+                ["aws", "s3", "cp", "--only-show-errors", str(artifact), target],
+                cwd=ROOT,
+                check=False,
+            )
+            if result.returncode == 0:
+                print(f"Synced {artifact.name} to {target}")
+            else:
+                _warn_command_failure(f"S3 sync for {artifact.name}", result)
 
 
 def maybe_push_to_github(remote: str, branch: str) -> None:
@@ -323,7 +343,7 @@ def maybe_push_to_github(remote: str, branch: str) -> None:
         return
 
     auth = base64.b64encode(f"x-access-token:{token}".encode()).decode("ascii")
-    run(
+    result = run(
         [
             "git",
             "-c",
@@ -333,8 +353,12 @@ def maybe_push_to_github(remote: str, branch: str) -> None:
             f"HEAD:{branch}",
         ],
         cwd=ROOT,
-        check=True,
+        check=False,
     )
+    if result.returncode == 0:
+        print(f"Pushed latest result to {remote}/{branch}")
+    else:
+        _warn_command_failure(f"git push to {remote}/{branch}", result)
 
 
 def log_and_finalize(

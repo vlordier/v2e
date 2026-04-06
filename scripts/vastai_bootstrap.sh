@@ -71,9 +71,18 @@ fi
 export MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-v2e-imu-vastai}"
 export RESEARCH_BRANCH
 export GITHUB_REMOTE="${GITHUB_REMOTE:-origin}"
+export PYTHONUNBUFFERED=1
+
+EXISTING_PIDS="$(pgrep -f 'research/v2e_imu/autoresearch_runner.py' || true)"
+if [ -n "$EXISTING_PIDS" ]; then
+  echo "[bootstrap] stopping existing autoresearch runner(s): $EXISTING_PIDS"
+  # shellcheck disable=SC2086
+  kill $EXISTING_PIDS || true
+  sleep 2
+fi
 
 echo "[bootstrap] starting autoresearch runner"
-nohup python research/v2e_imu/autoresearch_runner.py \
+nohup python -u research/v2e_imu/autoresearch_runner.py \
   --env-file "$ENV_FILE" \
   --plan "$AUTORESEARCH_PLAN" \
   --python-bin "$REPO_DIR/.venv/bin/python" \
