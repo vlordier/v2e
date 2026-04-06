@@ -62,7 +62,7 @@ class FourierLayer(nn.Module):  # type: ignore[misc]
         )
 
         out_fft = torch.zeros((B, C, H, x_fft.shape[-1]), dtype=x_fft.dtype, device=x.device)
-        out_fft[:, :, :modes_h, :modes_w] = out_r + 1j * out_i
+        out_fft[:, :, :modes_h, :modes_w] = torch.complex(out_r, out_i)
         return torch.fft.irfft2(out_fft, s=(H, W)).to(dtype=dtype)
 
 
