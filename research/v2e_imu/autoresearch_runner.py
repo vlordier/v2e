@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -522,8 +522,18 @@ def _format_float_literal(value: float) -> str:
     return f"{value:.6g}"
 
 
-def _constants_signature(constants: dict[str, str]) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted((key, str(value)) for key, value in constants.items()))
+def _normalise_signature_value(value: object) -> str:
+    if isinstance(value, float):
+        return _format_float_literal(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(int(value))
+    return str(value)
+
+
+def _constants_signature(constants: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        sorted((key, _normalise_signature_value(value)) for key, value in constants.items())
+    )
 
 
 def build_training_env(exp: Experiment, base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -562,7 +572,7 @@ def build_optuna_experiment(
         sampler=sampler,
     )
     seen_signatures = {
-        _constants_signature({key: str(value) for key, value in trial.params.items()})
+        _constants_signature(trial.params)
         for trial in study.get_trials(deepcopy=False)
         if trial.params
     }
