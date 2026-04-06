@@ -33,3 +33,4 @@ f25cea3	0.627300	3.2	keep	Optuna trial 756 exploring batch=16, device_batch=16, 
 a7e64fd	0.632200	3.2	keep	Optuna trial 757 exploring batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000710623, wd=0.0003.
 a70907c	0.630600	3.2	discard	Optuna trial 758 exploring batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000667642, wd=0.0003.
 1723bb9	0.000000	0.0	crash	Optuna trial 760 exploring model=fno, fno_layers=2, fno_channels=160, fno_modes=10, batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000506066, wd=0.0003.					
+9e66302	0.000000	0.0	crash	Optuna trial 761 exploring model=fno, fno_layers=4, fno_channels=128, fno_modes=10, batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000508727, wd=0.0003.					
