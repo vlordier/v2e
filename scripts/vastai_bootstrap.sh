@@ -61,6 +61,20 @@ git config user.email "${GIT_AUTHOR_EMAIL:-vastai-autoresearch@example.com}"
 
 mkdir -p "$LOG_DIR"
 
+if [ "${AUTORESEARCH_DOWNLOAD_FPV:-1}" != "0" ]; then
+  if ! find "$REPO_DIR/research/v2e_imu/data/fpv" -name 'imu.txt' -print -quit 2>/dev/null | grep -q .; then
+    FPV_SEQUENCE="${AUTORESEARCH_FPV_SEQUENCE:-indoor_forward_3}"
+    echo "[bootstrap] downloading FPV data sequence: $FPV_SEQUENCE"
+    if ! python research/v2e_imu/download_fpv.py \
+      --sequence "$FPV_SEQUENCE" \
+      --output "$REPO_DIR/research/v2e_imu/data/fpv"; then
+      echo "[bootstrap] warning: FPV download failed; continuing with synthetic fallback" >&2
+    fi
+  else
+    echo "[bootstrap] FPV data already present; skipping download"
+  fi
+fi
+
 echo "[bootstrap] repo_dir=$REPO_DIR"
 echo "[bootstrap] base_branch=$BASE_BRANCH research_branch=$RESEARCH_BRANCH"
 echo "[bootstrap] log_dir=$LOG_DIR"
