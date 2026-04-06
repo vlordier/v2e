@@ -63,7 +63,9 @@ echo "[bootstrap] log_dir=$LOG_DIR"
 
 if command -v aws >/dev/null 2>&1 && [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
   echo "[bootstrap] validating AWS credentials"
-  aws sts get-caller-identity >/dev/null
+  if ! aws sts get-caller-identity >/dev/null; then
+    echo "[bootstrap] warning: AWS STS preflight failed; continuing without blocking startup" >&2
+  fi
 fi
 
 export MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-v2e-imu-vastai}"
