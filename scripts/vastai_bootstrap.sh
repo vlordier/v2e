@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+START_DIR="$(pwd)"
+DEFAULT_REPO_DIR="$HOME/v2e"
+if [ -d "$START_DIR/.git" ]; then
+  DEFAULT_REPO_DIR="$START_DIR"
+fi
+
 GITHUB_REPO_URL="${GITHUB_REPO_URL:-https://github.com/vlordier/v2e.git}"
-REPO_DIR="${REPO_DIR:-$HOME/v2e}"
+REPO_DIR="${REPO_DIR:-$DEFAULT_REPO_DIR}"
 BASE_BRANCH="${BASE_BRANCH:-research/apr03}"
 RESEARCH_BRANCH="${RESEARCH_BRANCH:-research/vastai-$(date +%b%d | tr '[:upper:]' '[:lower:]')}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 AUTORESEARCH_PLAN="${AUTORESEARCH_PLAN:-research/v2e_imu/autoresearch_plan.example.json}"
 LOG_DIR="${LOG_DIR:-$REPO_DIR/logs}"
 ENV_FILE="${ENV_FILE:-$REPO_DIR/research/v2e_imu/.env.vastai.local}"
+
+case "$ENV_FILE" in
+  /*) ;;
+  *) ENV_FILE="$START_DIR/$ENV_FILE" ;;
+esac
 
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -46,7 +57,12 @@ git config user.email "${GIT_AUTHOR_EMAIL:-vastai-autoresearch@example.com}"
 
 mkdir -p "$LOG_DIR"
 
+echo "[bootstrap] repo_dir=$REPO_DIR"
+echo "[bootstrap] base_branch=$BASE_BRANCH research_branch=$RESEARCH_BRANCH"
+echo "[bootstrap] log_dir=$LOG_DIR"
+
 if command -v aws >/dev/null 2>&1 && [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  echo "[bootstrap] validating AWS credentials"
   aws sts get-caller-identity >/dev/null
 fi
 
@@ -54,6 +70,7 @@ export MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-v2e-imu-vastai}"
 export RESEARCH_BRANCH
 export GITHUB_REMOTE="${GITHUB_REMOTE:-origin}"
 
+echo "[bootstrap] starting autoresearch runner"
 nohup python research/v2e_imu/autoresearch_runner.py \
   --env-file "$ENV_FILE" \
   --plan "$AUTORESEARCH_PLAN" \
@@ -61,7 +78,15 @@ nohup python research/v2e_imu/autoresearch_runner.py \
   --branch "$RESEARCH_BRANCH" \
   --remote "$GITHUB_REMOTE" \
   --push > "$LOG_DIR/vastai-autoresearch.out" 2>&1 &
+RUN_PID=$!
+sleep 5
 
 printf '\nAutoresearch launched.\n'
+printf 'Runner PID: %s\n' "$RUN_PID"
 printf 'Log file: %s\n' "$LOG_DIR/vastai-autoresearch.out"
 printf 'Tail with: tail -f %s\n' "$LOG_DIR/vastai-autoresearch.out"
+ps -p "$RUN_PID" -o pid=,stat=,etime=,command= || true
+if [ -f "$LOG_DIR/vastai-autoresearch.out" ]; then
+  echo "[bootstrap] initial runner log"
+  tail -n 40 "$LOG_DIR/vastai-autoresearch.out" || true
+fi

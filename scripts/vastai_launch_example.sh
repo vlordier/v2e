@@ -9,6 +9,7 @@ IMAGE="${IMAGE:-nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04}"
 DISK_GB="${DISK_GB:-80}"
 SEARCH_QUERY="${SEARCH_QUERY:-reliability > 0.98 num_gpus=1 gpu_ram>=20 dph<0.6 inet_up>100 inet_down>100}"
 DEFAULT_BASE_BRANCH="${BASE_BRANCH:-$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)}"
+SSH_KEY_FILE="${SSH_KEY_FILE:-}"
 ACTION="${1:-launch}"
 OFFER_ID="${2:-${OFFER_ID:-}}"
 
@@ -70,6 +71,34 @@ configure_api_key() {
 
 shell_quote() {
   printf '%q' "$1"
+}
+
+choose_ssh_key_file() {
+  if [ -n "$SSH_KEY_FILE" ] && [ -f "$SSH_KEY_FILE" ]; then
+    printf '%s\n' "$SSH_KEY_FILE"
+    return 0
+  fi
+
+  for candidate in "$HOME/.ssh/vastai.pub" "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+maybe_attach_ssh_key() {
+  local instance_id="$1"
+  local key_file
+  if ! key_file="$(choose_ssh_key_file)"; then
+    echo "No local SSH public key found to attach." >&2
+    return 0
+  fi
+
+  "$VASTAI_BIN" attach "$instance_id" "$(cat "$key_file")" >/dev/null
+  echo "Attached SSH key from $key_file"
 }
 
 build_remote_env() {
@@ -147,11 +176,16 @@ case "$ACTION" in
     if [ -z "$OFFER_ID" ]; then
       read -r -p "Enter chosen offer id: " OFFER_ID
     fi
-    "$VASTAI_BIN" create instance "$OFFER_ID" \
+    create_output="$("$VASTAI_BIN" create instance "$OFFER_ID" \
       --image "$IMAGE" \
       --disk "$DISK_GB" \
       --ssh \
-      --onstart-cmd "$(build_onstart)"
+      --onstart-cmd "$(build_onstart)")"
+    printf '%s\n' "$create_output"
+    instance_id="$(printf '%s\n' "$create_output" | sed -n "s/.*'new_contract': \([0-9][0-9]*\).*/\1/p" | tail -n 1)"
+    if [ -n "$instance_id" ]; then
+      maybe_attach_ssh_key "$instance_id"
+    fi
     ;;
   *)
     echo "Unknown action: $ACTION" >&2
