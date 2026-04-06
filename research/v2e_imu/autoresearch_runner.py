@@ -35,7 +35,7 @@ BASELINE_CONSTANTS: dict[str, str] = {
     "IMU_HIDDEN_DIM": "128",
     "TOTAL_BATCH_SIZE": "4",
     "DEVICE_BATCH_SIZE": "4",
-    "LEARNING_RATE": "1e-3",
+    "LEARNING_RATE": "2e-3",
     "WEIGHT_DECAY": "0.0",
     "WARMUP_RATIO": "0.1",
     "WARMDOWN_RATIO": "0.3",
@@ -44,21 +44,29 @@ BASELINE_CONSTANTS: dict[str, str] = {
 
 DEFAULT_PLAN: list[dict[str, Any]] = [
     {
-        "name": "AdamW weight_decay=1e-2",
-        "description": "Best batch-size configuration with stronger AdamW regularization.",
-        "commit_message": "probe: AdamW weight_decay=1e-2",
+        "name": "AdamW weight_decay=1e-4 on restored baseline",
+        "description": "Test mild AdamW regularization on the restored batch=4 LR=2e-3 baseline.",
+        "commit_message": "probe: AdamW weight_decay=1e-4",
         "constants": {
-            "WEIGHT_DECAY": "1e-2",
+            "WEIGHT_DECAY": "1e-4",
         },
     },
     {
-        "name": "Scheduler warmup 5% warmdown 50%",
-        "description": "Retest the strongest scheduler shape on the best batch-size/LR baseline.",
-        "commit_message": "probe: warmup 5% warmdown 50%",
+        "name": "Scheduler warmup 5% warmdown 50% on restored baseline",
+        "description": "Retest the strongest scheduler shape on the restored batch=4 LR=2e-3 baseline.",
+        "commit_message": "probe: warmup 5% warmdown 50% restored baseline",
         "constants": {
             "WARMUP_RATIO": "0.05",
             "WARMDOWN_RATIO": "0.5",
             "FINAL_LR_FRAC": "0.01",
+        },
+    },
+    {
+        "name": "LR 2.5e-3 on restored baseline",
+        "description": "Test a slightly faster LR on the best batch=4 configuration.",
+        "commit_message": "probe: LR 2.5e-3 on batch=4 baseline",
+        "constants": {
+            "LEARNING_RATE": "2.5e-3",
         },
     },
 ]
