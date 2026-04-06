@@ -29,6 +29,33 @@ Current sweep snapshot from `scripts/realism_sweep.py`:
 
 These numbers are **sanity-check results, not calibration targets**. They show that the new knobs are active and materially changing event statistics in the intended directions.
 
+### Real-clip comparative run (April 2026)
+
+End-to-end run on `media/counting.gif` (1 second, DVS346 resolution, no SloMo):
+
+```
+python v2e.py -i media/counting.gif -o /tmp/v2e_realism_baseline \
+  --no_preview --disable_slomo --dvs346 --skip_video_output --dvs_text events.txt --stop_time 1.0
+
+python v2e.py -i media/counting.gif -o /tmp/v2e_realism_proto \
+  --no_preview --disable_slomo --dvs346 --skip_video_output --dvs_text events.txt --stop_time 1.0 \
+  --refractory_mode soft --refractory_period 0.001 --refractory_tau_s 0.0005 \
+  --threshold_adaptation_gain 0.1 --threshold_adaptation_tau_s 0.05 \
+  --hot_pixel_fraction 0.002 --hot_pixel_rate_hz 25 \
+  --bursty_pixel_fraction 0.001 --bursty_pixel_rate_hz 10 \
+  --row_noise_rate_hz 0.2 \
+  --scene_cut_policy reset --scene_cut_threshold 0.2
+```
+
+| Metric | Baseline | Experimental | Change |
+| --- | ---: | ---: | ---: |
+| Total events | 1,034,434 | 833,170 | **−19.5%** |
+| ON events | 508,471 | 374,828 | −26.3% |
+| OFF events | 525,965 | 458,344 | −12.9% |
+| ON/OFF ratio | 0.967 | 0.818 | (more OFF-skewed) |
+
+The asymmetric ON/OFF reduction is expected: the combined soft refractory + threshold adaptation primarily attenuates rapid ON bursts (fast-ramp transitions), while the OFF channel (slower decay paths) is less affected. The ON/OFF ratio shift from ~0.97 to ~0.82 is consistent with real DVS sensors, which exhibit an inherent ON/OFF asymmetry.
+
 ---
 
 ## Current baseline in the repo
