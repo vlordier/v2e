@@ -89,6 +89,10 @@ class Experiment:
     replacements: tuple[Replacement, ...] = ()
 
 
+class NoOpExperimentError(RuntimeError):
+    """Raised when an experiment would not change the current baseline."""
+
+
 def default_branch_name() -> str:
     return os.getenv("RESEARCH_BRANCH", f"research/vastai-{time.strftime('%b%d').lower()}")
 
@@ -323,7 +327,7 @@ def completed_experiment_descriptions() -> set[str]:
         if len(parts) < 5:
             continue
         _, _, _, status, description = parts[:5]
-        if status in {"keep", "discard", "crash"} and description:
+        if status in {"keep", "discard", "crash", "skip"} and description:
             completed.add(description)
     return completed
 
@@ -412,7 +416,7 @@ def commit_experiment(exp: Experiment) -> str:
     git("add", str(TRAIN_FILE.relative_to(ROOT)))
     diff = git("diff", "--cached", "--quiet", check=False)
     if diff.returncode == 0:
-        raise RuntimeError(f"No staged changes detected for experiment: {exp.name}")
+        raise NoOpExperimentError(f"No staged changes detected for experiment: {exp.name}")
     git("commit", "-m", exp.commit_message)
     return short_commit()
 
@@ -627,7 +631,12 @@ def main() -> None:
         for exp in pending:
             print(f"=== Running experiment: {exp.name} ===")
             apply_experiment(exp)
-            experiment_sha = commit_experiment(exp)
+            try:
+                experiment_sha = commit_experiment(exp)
+            except NoOpExperimentError as exc:
+                append_result(short_commit(), 0.0, 0.0, "skip", exp.description)
+                print(f"SKIP {exp.name}: {exc}")
+                continue
             ok, log_text = run_training(exp, args.timeout_seconds, args.python_bin)
             val_ap, peak_vram = parse_run_metrics(log_text)
             log_and_finalize(

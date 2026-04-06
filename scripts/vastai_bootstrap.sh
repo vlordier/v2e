@@ -40,6 +40,8 @@ fi
 
 cd "$REPO_DIR"
 git "${GIT_AUTH[@]}" fetch origin --prune
+git "${GIT_AUTH[@]}" fetch origin "$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" || true
+git "${GIT_AUTH[@]}" fetch origin "$RESEARCH_BRANCH:refs/remotes/origin/$RESEARCH_BRANCH" || true
 if git show-ref --verify --quiet "refs/remotes/origin/$RESEARCH_BRANCH"; then
   git checkout -B "$RESEARCH_BRANCH" "origin/$RESEARCH_BRANCH"
 elif git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
