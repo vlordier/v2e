@@ -1,4 +1,4 @@
-commit	val_ap	peak_memory_gb	status	description
+commit	val_ap	peak_memory_gb	status	description	score	latency_ms	f1_score	samples_per_sec	total_seconds
 8b6db50	0.5734	0.0	baseline	UNet BASE_CHANNELS=32 IMU_HIDDEN=128 focal_bce alpha=0.75 rate_reg=0.01 AMP per-channel
 44f75f9	0.5619	0.0	discard	BASE_CHANNELS=48 LR=5e-4 (larger model + lower LR both hurt)
 613a43c	0.5682	0.0	discard	BASE_CHANNELS=48 LR=1e-3 (larger model slower to converge in 15min)
@@ -32,3 +32,4 @@ f052500	0.624400	2.0	discard	Optuna trial 754 exploring batch=8, device_batch=8,
 f25cea3	0.627300	3.2	keep	Optuna trial 756 exploring batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000804827, wd=0.0003.
 a7e64fd	0.632200	3.2	keep	Optuna trial 757 exploring batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000710623, wd=0.0003.
 a70907c	0.630600	3.2	discard	Optuna trial 758 exploring batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000667642, wd=0.0003.
+1723bb9	0.000000	0.0	crash	Optuna trial 760 exploring model=fno, fno_layers=2, fno_channels=160, fno_modes=10, batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000506066, wd=0.0003.					
