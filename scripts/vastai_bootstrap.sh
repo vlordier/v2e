@@ -100,7 +100,7 @@ export RESEARCH_BRANCH
 export GITHUB_REMOTE="${GITHUB_REMOTE:-origin}"
 export PYTHONUNBUFFERED=1
 
-EXISTING_PIDS="$(pgrep -f 'research/v2e_imu/autoresearch_runner.py' || true)"
+EXISTING_PIDS="$(pgrep -f '[a]utoresearch_runner.py' || true)"
 if [ -n "$EXISTING_PIDS" ]; then
   echo "[bootstrap] stopping existing autoresearch runner(s): $EXISTING_PIDS"
   # shellcheck disable=SC2086
@@ -108,7 +108,7 @@ if [ -n "$EXISTING_PIDS" ]; then
   sleep 2
 fi
 
-TRAIN_PIDS="$(pgrep -f '(^|/).venv/bin/python train.py|python train.py' || true)"
+TRAIN_PIDS="$(pgrep -f '[t]rain.py' || true)"
 if [ -n "$TRAIN_PIDS" ]; then
   echo "[bootstrap] stopping existing training job(s): $TRAIN_PIDS"
   # shellcheck disable=SC2086
