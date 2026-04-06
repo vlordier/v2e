@@ -97,7 +97,7 @@ maybe_attach_ssh_key() {
     return 0
   fi
 
-  "$VASTAI_BIN" attach "$instance_id" "$(cat "$key_file")" >/dev/null
+  "$VASTAI_BIN" attach ssh "$instance_id" "$(cat "$key_file")" >/dev/null
   echo "Attached SSH key from $key_file"
 }
 
