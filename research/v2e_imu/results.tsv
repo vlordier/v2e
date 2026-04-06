@@ -57,3 +57,4 @@ dbbd6f6	0.000000	0.0	crash	Optuna trial 781 exploring model=fno, fno_layers=4, f
 802ac0c	0.000000	0.0	crash	Optuna trial 783 exploring model=fno, fno_layers=4, fno_channels=96, fno_modes=10, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000849188, wd=0.					
 8cdd8ff	0.000000	0.0	crash	Optuna trial 784 exploring model=fno, fno_layers=2, fno_channels=96, fno_modes=6, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000841891, wd=0.					
 a9bcdfa	0.000000	0.0	crash	Optuna trial 785 exploring model=fno, fno_layers=2, fno_channels=128, fno_modes=6, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000897533, wd=0.					
+7be0ceb	0.000000	0.0	crash	Optuna trial 786 exploring model=fno, fno_layers=2, fno_channels=128, fno_modes=10, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000908718, wd=0.					
