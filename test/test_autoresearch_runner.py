@@ -75,6 +75,56 @@ class AutoresearchRunnerTests(unittest.TestCase):
         assert first is not None and second is not None
         self.assertNotEqual(first.constants, second.constants)
 
+    def test_build_optuna_experiment_includes_architecture_choices(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+            config = runner.OptunaConfig(
+                enabled=True,
+                study_name="unit-test-study-architecture",
+                storage_url=f"sqlite:///{tmp.name}",
+                max_generated=1,
+                model_type_choices=("unet", "fno"),
+                fusion_type_choices=("film", "gated"),
+                model_family_choices=("light", "heavy"),
+                unet_depth_choices=(2, 4),
+                fno_layer_choices=(2, 6),
+                fno_channel_choices=(96, 160),
+            )
+
+            exp = runner.build_optuna_experiment(config, completed_descriptions=set())
+
+        self.assertIsNotNone(exp)
+        assert exp is not None
+        self.assertIn("MODEL_TYPE", exp.constants)
+        model_type = exp.constants["MODEL_TYPE"].strip('"')
+        self.assertIn(model_type, {"unet", "fno"})
+        if model_type == "unet":
+            self.assertIn("FUSION_TYPE", exp.constants)
+            self.assertIn("MODEL_FAMILY", exp.constants)
+            self.assertIn("UNET_DEPTH", exp.constants)
+        else:
+            self.assertIn("FNO_LAYERS", exp.constants)
+            self.assertIn("FNO_CHANNELS", exp.constants)
+
+    def test_compute_autoresearch_score_rewards_better_efficiency(self) -> None:
+        fast = runner.RunMetrics(
+            val_ap=0.62,
+            f1_score=0.58,
+            peak_vram_mb=2048.0,
+            samples_per_sec=30.0,
+            total_seconds=910.0,
+        )
+        slow = runner.RunMetrics(
+            val_ap=0.62,
+            f1_score=0.58,
+            peak_vram_mb=6144.0,
+            samples_per_sec=8.0,
+            total_seconds=1010.0,
+        )
+
+        self.assertGreater(
+            runner.compute_autoresearch_score(fast), runner.compute_autoresearch_score(slow)
+        )
+
     def test_completed_descriptions_treat_crash_as_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             results_path = Path(tmpdir) / "results.tsv"

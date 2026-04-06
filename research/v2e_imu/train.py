@@ -63,6 +63,9 @@ class ModelConfig:
     base_channels: int = 32
     event_channels: int = 2  # positive and negative
     use_imu: bool = True  # set False for image-only ablation
+    fusion_type: str = "film"  # film | gated | additive | none
+    model_family: str = "balanced"  # light | balanced | heavy
+    unet_depth: int = 3
 
 
 class IMUEncoder(nn.Module):  # type: ignore[misc]
@@ -91,70 +94,97 @@ class IMUEncoder(nn.Module):  # type: ignore[misc]
         return self.norm(self.fc(context))
 
 
+def build_channel_schedule(base_channels: int, depth: int, model_family: str) -> list[int]:
+    """Construct a channel pyramid for light/balanced/heavy U-Net branches."""
+    family = model_family.strip().lower()
+    templates = {
+        "light": (1, 2, 2, 4),
+        "balanced": (1, 2, 4, 4),
+        "heavy": (1, 2, 4, 8),
+    }
+    multipliers = templates.get(family, templates["balanced"])
+    depth = max(2, min(int(depth), len(multipliers)))
+    return [max(8, base_channels) * mult for mult in multipliers[:depth]]
+
+
 class RGBEncoder(nn.Module):  # type: ignore[misc]
-    """Encode grayscale images into feature maps with skip connections."""
+    """Encode stacked grayscale frame pairs into a configurable feature pyramid."""
 
-    def __init__(self, in_channels: int = 1, base_channels: int = 32) -> None:
+    def __init__(
+        self,
+        in_channels: int = 1,
+        base_channels: int = 32,
+        depth: int = 3,
+        model_family: str = "balanced",
+    ) -> None:
         super().__init__()
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1),
-            _gn(base_channels),
-            nn.SiLU(inplace=True),
-        )
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1),
-            _gn(base_channels * 2),
-            nn.SiLU(inplace=True),
-        )
-        self.layer3 = nn.Sequential(
-            nn.Conv2d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1),
-            _gn(base_channels * 4),
-            nn.SiLU(inplace=True),
-        )
-        self.out_channels = base_channels * 4
+        channel_schedule = build_channel_schedule(base_channels, depth, model_family)
+        self.blocks = nn.ModuleList()
+        prev_channels = in_channels
+        for out_channels in channel_schedule:
+            self.blocks.append(
+                nn.Sequential(
+                    nn.Conv2d(prev_channels, out_channels, 3, stride=2, padding=1),
+                    _gn(out_channels),
+                    nn.SiLU(inplace=True),
+                    nn.Conv2d(out_channels, out_channels, 3, padding=1),
+                    _gn(out_channels),
+                    nn.SiLU(inplace=True),
+                )
+            )
+            prev_channels = out_channels
+        self.channel_schedule = channel_schedule
+        self.out_channels = channel_schedule[-1]
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x1 = self.layer1(x)
-        x2 = self.layer2(x1)
-        x3 = self.layer3(x2)
-        return x1, x2, x3
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        features: list[torch.Tensor] = []
+        for block in self.blocks:
+            x = block(x)
+            features.append(x)
+        return tuple(features)
 
 
 class MultiScaleFiLM(nn.Module):  # type: ignore[misc]
-    """Multi-scale FiLM modulation with IMU conditioning."""
+    """Multi-scale IMU conditioning supporting FiLM, gated, and additive fusion."""
 
-    def __init__(self, base_channels: int, imu_dim: int = 128) -> None:
+    def __init__(
+        self, channel_schedule: list[int], imu_dim: int = 128, fusion_type: str = "film"
+    ) -> None:
         super().__init__()
-        scales = [base_channels, base_channels * 2, base_channels * 4]
+        self.fusion_type = fusion_type.strip().lower()
 
-        # Shared IMU feature projection
         self.imu_proj = nn.Sequential(
             nn.Linear(imu_dim, imu_dim * 2),
             nn.SiLU(),
             nn.Linear(imu_dim * 2, imu_dim * 2),
         )
 
-        # FiLM scale: initialized to identity (weight=0, bias=1) so features
-        # flow through unchanged at step 0.
-        self.film_scale = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in scales])
-        for linear in self.film_scale:
+        self.film_scale = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in channel_schedule])
+        self.film_bias = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in channel_schedule])
+        for linear in [*self.film_scale, *self.film_bias]:
             nn.init.zeros_(linear.weight)
-            nn.init.ones_(linear.bias)
-
-        # FiLM bias: unconstrained — no Tanh, which would cap the shift at ±1
-        # regardless of activation scale and neuter the conditioning.
-        self.film_bias = nn.ModuleList([nn.Linear(imu_dim * 2, c) for c in scales])
+            nn.init.zeros_(linear.bias)
 
     def forward(
-        self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor], imu_features: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, features: tuple[torch.Tensor, ...], imu_features: torch.Tensor
+    ) -> tuple[torch.Tensor, ...]:
         imu_proj = self.imu_proj(imu_features)
 
         modulated = []
         for f, scale_fn, bias_fn in zip(features, self.film_scale, self.film_bias, strict=True):
             scale = scale_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
             bias = bias_fn(imu_proj).view(f.shape[0], f.shape[1], 1, 1)
-            modulated.append(f * scale + bias)
+
+            if self.fusion_type == "none":
+                modulated.append(f)
+            elif self.fusion_type == "additive":
+                modulated.append(f + bias)
+            elif self.fusion_type == "gated":
+                gate = torch.sigmoid(scale + 4.0)
+                modulated.append(f * gate + bias)
+            else:
+                film_scale = 1.0 + 0.5 * torch.tanh(scale)
+                modulated.append(f * film_scale + bias)
 
         return tuple(modulated)
 
@@ -180,65 +210,86 @@ class EventPredictionHead(nn.Module):  # type: ignore[misc]
 
 
 class EventPredictor(nn.Module):  # type: ignore[misc]
-    """RGB + IMU → ON/OFF event probability maps.
-
-    When config.use_imu=False the IMU encoder and FiLM fusion are bypassed
-    (image-only ablation): features pass straight from encoder to decoder.
-    """
+    """RGB + IMU → ON/OFF event probability maps with search-ready architecture knobs."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
         self.rgb_encoder = RGBEncoder(
-            in_channels=config.rgb_channels, base_channels=config.base_channels
+            in_channels=config.rgb_channels,
+            base_channels=config.base_channels,
+            depth=config.unet_depth,
+            model_family=config.model_family,
         )
-        if config.use_imu:
+        self.channel_schedule = self.rgb_encoder.channel_schedule
+        self.use_conditioning = config.use_imu and config.fusion_type.lower() != "none"
+        if self.use_conditioning:
             self.imu_encoder = IMUEncoder(input_dim=6, hidden_dim=config.imu_hidden_dim)
             self.fusion = MultiScaleFiLM(
-                base_channels=config.base_channels, imu_dim=config.imu_hidden_dim
+                self.channel_schedule,
+                imu_dim=config.imu_hidden_dim,
+                fusion_type=config.fusion_type,
             )
-        base = config.base_channels
-        self.up1 = nn.Sequential(
-            nn.ConvTranspose2d(base * 4, base * 2, 4, stride=2, padding=1),
-            _gn(base * 2),
+
+        self.up_blocks = nn.ModuleList()
+        self.merge_blocks = nn.ModuleList()
+        for in_channels, skip_channels in zip(
+            self.channel_schedule[:0:-1],
+            reversed(self.channel_schedule[:-1]),
+            strict=True,
+        ):
+            self.up_blocks.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(in_channels, skip_channels, 4, stride=2, padding=1),
+                    _gn(skip_channels),
+                    nn.SiLU(inplace=True),
+                )
+            )
+            self.merge_blocks.append(
+                nn.Sequential(
+                    nn.Conv2d(skip_channels * 2, skip_channels, 3, padding=1),
+                    _gn(skip_channels),
+                    nn.SiLU(inplace=True),
+                )
+            )
+
+        head_channels = self.channel_schedule[0]
+        self.final_up = nn.Sequential(
+            nn.ConvTranspose2d(head_channels, head_channels, 4, stride=2, padding=1),
+            _gn(head_channels),
             nn.SiLU(inplace=True),
         )
-        self.up2 = nn.Sequential(
-            nn.ConvTranspose2d(base * 4, base, 4, stride=2, padding=1),
-            _gn(base),
-            nn.SiLU(inplace=True),
-        )
-        self.up3 = nn.Sequential(
-            nn.ConvTranspose2d(base * 2, base, 4, stride=2, padding=1),
-            _gn(base),
-            nn.SiLU(inplace=True),
-        )
-        self.event_head = EventPredictionHead(in_channels=base)
+        self.event_head = EventPredictionHead(in_channels=head_channels)
 
     def forward(self, image: torch.Tensor, imu_seq: torch.Tensor) -> torch.Tensor:
         _, _, H, W = image.shape
 
-        # Pad to the nearest multiple of 8 so every stride-2 encoder layer
-        # produces integer-sized feature maps that exactly match skip-connection
-        # sizes.  This eliminates all F.interpolate fallbacks in the decoder.
-        pad_h = (8 - H % 8) % 8
-        pad_w = (8 - W % 8) % 8
+        pad_factor = 2 ** max(1, self.config.unet_depth)
+        pad_h = (pad_factor - H % pad_factor) % pad_factor
+        pad_w = (pad_factor - W % pad_factor) % pad_factor
         if pad_h or pad_w:
             image = F.pad(image, (0, pad_w, 0, pad_h))
 
-        x1, x2, x3 = self.rgb_encoder(image)
+        features = list(self.rgb_encoder(image))
 
-        if self.config.use_imu:
+        if self.use_conditioning:
             imu_features = self.imu_encoder(imu_seq)
-            x1, x2, x3 = self.fusion((x1, x2, x3), imu_features)
+            features = list(self.fusion(tuple(features), imu_features))
 
-        # U-Net decoder with skip connections — no F.interpolate needed with padding
-        d1 = torch.cat([self.up1(x3), x2], dim=1)
-        d2 = torch.cat([self.up2(d1), x1], dim=1)
-        d3 = self.up3(d2)
+        x = features[-1]
+        for up_block, merge_block, skip in zip(
+            self.up_blocks,
+            self.merge_blocks,
+            reversed(features[:-1]),
+            strict=True,
+        ):
+            x = up_block(x)
+            if x.shape[2:] != skip.shape[2:]:
+                x = F.interpolate(x, size=skip.shape[2:], mode="nearest")
+            x = merge_block(torch.cat([x, skip], dim=1))
 
-        # Crop to original spatial dimensions and apply prediction head
-        return self.event_head(d3)[:, :, :H, :W]
+        x = self.final_up(x)
+        return self.event_head(x)[:, :, :H, :W]
 
 
 # ---------------------------------------------------------------------------
@@ -248,9 +299,12 @@ class EventPredictor(nn.Module):  # type: ignore[misc]
 # Model selection: "unet" (default) or "fno"
 MODEL_TYPE = "unet"
 
-# UNet hyperparameters
+# UNet / fusion architecture search knobs
 BASE_CHANNELS = 32
 IMU_HIDDEN_DIM = 128
+FUSION_TYPE = "film"  # film | gated | additive | none
+MODEL_FAMILY = "balanced"  # light | balanced | heavy
+UNET_DEPTH = 3
 
 # FNO hyperparameters (only used when MODEL_TYPE="fno")
 FNO_MODES = 8  # Fourier modes per spatial dim
@@ -317,6 +371,40 @@ def get_lr_multiplier(progress: float) -> float:
     return cooldown * 1.0 + (1 - cooldown) * FINAL_LR_FRAC
 
 
+def compute_autoresearch_score(
+    eval_metrics: dict[str, float],
+    peak_vram_mb: float,
+    total_seconds: float,
+) -> dict[str, float]:
+    """Scalarize quality + efficiency for Optuna/autoresearch decisions.
+
+    Accuracy remains dominant, but similar-quality models are nudged toward
+    lower latency, lower VRAM, and faster end-to-end completion.
+    """
+    samples_per_sec = max(eval_metrics.get("samples_per_sec", 0.0), 1e-6)
+    latency_ms = 1000.0 / samples_per_sec
+    vram_gb = max(peak_vram_mb, 0.0) / 1024.0
+
+    quality_score = eval_metrics.get(
+        "quality_score",
+        0.60 * eval_metrics.get("val_ap", 0.0)
+        + 0.25 * eval_metrics.get("f1_score", 0.0)
+        + 0.15 * (0.5 * (eval_metrics.get("f1_on", 0.0) + eval_metrics.get("f1_off", 0.0))),
+    )
+    latency_score = min(1.0, 120.0 / max(latency_ms, 1.0))
+    vram_score = min(1.0, 4.0 / max(vram_gb, 0.25))
+    runtime_score = min(1.0, TIME_BUDGET / max(total_seconds, 1.0))
+    efficiency_score = 0.45 * latency_score + 0.35 * vram_score + 0.20 * runtime_score
+    autoresearch_score = 0.85 * quality_score + 0.15 * efficiency_score
+
+    return {
+        "quality_score": float(quality_score),
+        "efficiency_score": float(efficiency_score),
+        "latency_ms": float(latency_ms),
+        "autoresearch_score": float(autoresearch_score),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Training Loop (DO NOT EDIT BELOW THIS LINE)
 # ---------------------------------------------------------------------------
@@ -364,7 +452,13 @@ def create_model(device: str) -> tuple[nn.Module, int]:
             imu_hidden_dim=IMU_HIDDEN_DIM,
         ).to(device)
     else:
-        config = ModelConfig(base_channels=BASE_CHANNELS, imu_hidden_dim=IMU_HIDDEN_DIM)
+        config = ModelConfig(
+            base_channels=BASE_CHANNELS,
+            imu_hidden_dim=IMU_HIDDEN_DIM,
+            fusion_type=FUSION_TYPE,
+            model_family=MODEL_FAMILY,
+            unet_depth=UNET_DEPTH,
+        )
         model = EventPredictor(config).to(device)
     num_params = sum(p.numel() for p in model.parameters())
     return model, num_params
@@ -631,8 +725,10 @@ def print_results(
     physics_metrics: dict[str, float] | None = None,
     skipped_micro_batches: int = 0,
     skipped_optimizer_steps: int = 0,
-) -> None:
-    """Print final results."""
+) -> dict[str, float]:
+    """Print final results and return the scalarized autoresearch summary."""
+    score_metrics = compute_autoresearch_score(eval_metrics, peak_vram_mb, total_time)
+
     print("---")
     # Primary metric: Average Precision (threshold-free, smooth signal for autoresearch)
     print(f"val_ap: {eval_metrics['val_ap']:.4f}")
@@ -647,17 +743,29 @@ def print_results(
     print(f"precision: {eval_metrics['precision']:.4f}")
     print(f"recall: {eval_metrics['recall']:.4f}")
     print(f"event_mse: {eval_metrics['event_mse']:.6f}")
+    print(f"quality_score: {score_metrics['quality_score']:.4f}")
+    print(f"efficiency_score: {score_metrics['efficiency_score']:.4f}")
     # Training stats
     print(f"training_seconds: {total_training_time:.1f}")
     print(f"total_seconds: {total_time:.1f}")
     print(f"peak_vram_mb: {peak_vram_mb:.1f}")
     print(f"samples_per_sec: {eval_metrics['samples_per_sec']:.1f}")
+    print(f"latency_ms: {score_metrics['latency_ms']:.2f}")
+    print(f"autoresearch_score: {score_metrics['autoresearch_score']:.4f}")
     print(f"num_steps: {num_steps}")
     print(f"skipped_micro_batches: {skipped_micro_batches}")
     print(f"skipped_optimizer_steps: {skipped_optimizer_steps}")
     print(f"num_params_M: {num_params / 1e6:.2f}")
+    print(f"model_type: {MODEL_TYPE}")
     print(f"base_channels: {BASE_CHANNELS}")
     print(f"imu_hidden_dim: {IMU_HIDDEN_DIM}")
+    print(f"fusion_type: {FUSION_TYPE}")
+    print(f"model_family: {MODEL_FAMILY}")
+    print(f"unet_depth: {UNET_DEPTH}")
+    print(f"fno_modes: {FNO_MODES}")
+    print(f"fno_layers: {FNO_LAYERS}")
+    print(f"fno_channels: {FNO_CHANNELS}")
+    return score_metrics
 
 
 def save_checkpoint(
@@ -677,6 +785,9 @@ def save_checkpoint(
             "model_type": MODEL_TYPE,
             "base_channels": BASE_CHANNELS,
             "imu_hidden_dim": IMU_HIDDEN_DIM,
+            "fusion_type": FUSION_TYPE,
+            "model_family": MODEL_FAMILY,
+            "unet_depth": UNET_DEPTH,
             "fno_modes": FNO_MODES,
             "fno_layers": FNO_LAYERS,
             "fno_channels": FNO_CHANNELS,
@@ -740,6 +851,12 @@ def train(resume_from: str | None = None) -> None:  # noqa: PLR0915
                 "model_type": MODEL_TYPE,
                 "base_channels": BASE_CHANNELS,
                 "imu_hidden_dim": IMU_HIDDEN_DIM,
+                "fusion_type": FUSION_TYPE,
+                "model_family": MODEL_FAMILY,
+                "unet_depth": UNET_DEPTH,
+                "fno_modes": FNO_MODES,
+                "fno_layers": FNO_LAYERS,
+                "fno_channels": FNO_CHANNELS,
                 "total_batch_size": TOTAL_BATCH_SIZE,
                 "device_batch_size": DEVICE_BATCH_SIZE,
                 "learning_rate": LEARNING_RATE,
@@ -825,7 +942,7 @@ def train(resume_from: str | None = None) -> None:  # noqa: PLR0915
         del val_loader
 
         peak_vram_mb = get_peak_memory_mb()
-        print_results(
+        score_metrics = print_results(
             eval_metrics,
             total_training_time,
             t_eval - t_start,
@@ -847,7 +964,11 @@ def train(resume_from: str | None = None) -> None:  # noqa: PLR0915
                 "precision": eval_metrics["precision"],
                 "recall": eval_metrics["recall"],
                 "event_mse": eval_metrics["event_mse"],
+                "quality_score": score_metrics["quality_score"],
+                "efficiency_score": score_metrics["efficiency_score"],
+                "autoresearch_score": score_metrics["autoresearch_score"],
                 "samples_per_sec": eval_metrics["samples_per_sec"],
+                "latency_ms": score_metrics["latency_ms"],
                 "physics_f1": physics_metrics["f1"],
                 "training_seconds": total_training_time,
                 "total_seconds": t_eval - t_start,

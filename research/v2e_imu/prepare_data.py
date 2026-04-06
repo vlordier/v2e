@@ -784,7 +784,7 @@ def _image_ap(pred: np.ndarray, gt_bin: np.ndarray) -> float:
     return float(np.trapezoid(precision, recall))
 
 
-def evaluate_combined_metric(
+def evaluate_combined_metric(  # noqa: PLR0915
     model: torch.nn.Module,
     dataloader: DataLoader,
     device: str,
@@ -879,6 +879,8 @@ def evaluate_combined_metric(
     precision, recall, f1 = _f1(total_tp, total_fp, total_fn)
     _, _, f1_on = _f1(total_tp_on, total_fp_on, total_fn_on)
     _, _, f1_off = _f1(total_tp_off, total_fp_off, total_fn_off)
+    balanced_f1 = 0.5 * (f1_on + f1_off)
+    quality_score = 0.60 * val_ap + 0.25 * f1 + 0.15 * balanced_f1
 
     return {
         "val_ap": val_ap,
@@ -887,6 +889,8 @@ def evaluate_combined_metric(
         "recall": recall,
         "f1_on": f1_on,
         "f1_off": f1_off,
+        "balanced_f1": float(balanced_f1),
+        "quality_score": float(quality_score),
         "event_mse": float(total_mse / max(total_elements, 1)),
         "samples_per_sec": samples_per_sec,
     }
