@@ -56,6 +56,29 @@ python v2e.py -i media/counting.gif -o /tmp/v2e_realism_proto \
 
 The asymmetric ON/OFF reduction is expected: the combined soft refractory + threshold adaptation primarily attenuates rapid ON bursts (fast-ramp transitions), while the OFF channel (slower decay paths) is less affected. The ON/OFF ratio shift from ~0.97 to ~0.82 is consistent with real DVS sensors, which exhibit an inherent ON/OFF asymmetry.
 
+### GPU SloMo run (Vast.ai RTX 3090, April 2026)
+
+Same clip with SloMo enabled on a Vast.ai RTX 3090 ($0.147/hr). SloMo upsampled 76 input frames to **2019 interpolated frames** (26.8× average factor), giving **1.49 ms average DVS timestamp resolution**.
+
+```
+python v2e.py -i media/counting.gif ... --stop_time 3.0          # (no --disable_slomo)
+```
+
+| Metric | Baseline | Experimental | Change |
+| --- | ---: | ---: | ---: |
+| Total events | 1,988,373 | 1,976,953 | **−0.57%** |
+| ON events | 989,030 | 983,110 | −0.60% |
+| OFF events | 999,340 | 993,840 | −0.55% |
+| ON/OFF ratio | 0.990 | 0.989 | unchanged |
+
+**Key finding — refractory/timestamp coupling:** the effect of the soft refractory controls drops from −19.5% (no SloMo, coarse timestamps) to −0.57% (SloMo 26.8×, 1.49 ms timestamps) because the refractory period (`--refractory_period 0.001 = 1 ms`) is nearly equal to the interpolated timestamp spacing. Once the interpolated frame interval exceeds the refractory period, the filter has no room to suppress inter-frame retriggering.
+
+**Implication for calibration:** to tune the refractory period from real sensor data, you must either:
+1. Use `--disable_slomo` (matched to sensor's native frame rate), or
+2. Set `--refractory_period` well below the SloMo timestamp resolution (e.g. `≤ 0.5 ms` for 26× upsampling at 25 fps input).
+
+The synthetic sweep results are **identical** on GPU vs CPU (correctness verified on RTX 3090, CUDA 12.6).
+
 ---
 
 ## Current baseline in the repo
