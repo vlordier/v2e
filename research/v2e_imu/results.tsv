@@ -17,3 +17,4 @@ e6832f6	0.000000	0.0	crash	Best batch-size configuration with stronger AdamW reg
 97f5243	0.000100	1.0	discard	Retest the strongest scheduler shape on the best batch-size/LR baseline.
 e2c6037	0.000000	0.0	crash	Test mild AdamW regularization on the restored batch=4 LR=2e-3 baseline. failed
 ecfd3ed	0.000100	1.0	discard	Retest the strongest scheduler shape on the restored batch=4 LR=2e-3 baseline.
+56378cb	0.000100	1.0	discard	Test a slightly faster LR on the best batch=4 configuration.
