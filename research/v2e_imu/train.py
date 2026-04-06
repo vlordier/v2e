@@ -293,10 +293,12 @@ def focal_bce_loss(
         gamma: Focusing parameter (2.0 is standard from RetinaNet).
         alpha: Weight for positive class (must be > 0.5 for positive-rare tasks).
     """
+    # Compute the loss in float32 for stable AMP/CUDA backward passes.
+    pred_c = pred.float().clamp(1e-6, 1.0 - 1e-6)
+
     # Threshold GT to binary targets.
     # GT is normalized by max_events=100, so ≥0.5 events/33ms → GT ≈ 0.005.
-    gt_bin = (gt > 0.005).float()
-    pred_c = pred.clamp(1e-6, 1.0 - 1e-6)
+    gt_bin = (gt > 0.005).to(dtype=pred_c.dtype)
     bce = -(gt_bin * torch.log(pred_c) + (1.0 - gt_bin) * torch.log(1.0 - pred_c))
     pt = gt_bin * pred_c + (1.0 - gt_bin) * (1.0 - pred_c)
     focal_weight = (1.0 - pt) ** gamma
@@ -435,13 +437,15 @@ def _accumulate_step(
     with torch.amp.autocast(device_type=autocast_type, enabled=(device == "cuda")):
         pred_prob = model(images, imu_seq)
 
+    pred_for_loss = pred_prob.float()
+
     # Focal BCE — primary loss (~4.6% positive pixels, alpha=0.75 upweights events)
-    event_loss = focal_bce_loss(pred_prob, gt_events) / grad_accum_steps
+    event_loss = focal_bce_loss(pred_for_loss, gt_events) / grad_accum_steps
 
     # Rate regularisation — per channel (ON, OFF separately) to avoid a model that
     # puts all mass into one channel satisfying the combined-mean target.
-    per_ch_mean = pred_prob.mean(dim=(0, 2, 3))  # (2,) mean over B, H, W
-    rate_reg = F.mse_loss(per_ch_mean, rate_target) / grad_accum_steps
+    per_ch_mean = pred_for_loss.mean(dim=(0, 2, 3))  # (2,) mean over B, H, W
+    rate_reg = F.mse_loss(per_ch_mean, rate_target.to(dtype=per_ch_mean.dtype)) / grad_accum_steps
 
     loss = event_loss + 0.01 * rate_reg
 
@@ -490,6 +494,8 @@ def run_training_loop(
             acc["evt"] += evt
             acc["rate"] += rate
 
+        if scaler:
+            scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if scaler:
             scaler.step(optimizer)
