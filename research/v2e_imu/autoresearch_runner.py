@@ -522,6 +522,10 @@ def _format_float_literal(value: float) -> str:
     return f"{value:.6g}"
 
 
+def _constants_signature(constants: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((key, str(value)) for key, value in constants.items()))
+
+
 def build_training_env(exp: Experiment, base_env: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(base_env or os.environ.copy())
     env.setdefault("MLFLOW_RUN_NAME", exp.name)
@@ -557,8 +561,13 @@ def build_optuna_experiment(
         load_if_exists=True,
         sampler=sampler,
     )
+    seen_signatures = {
+        _constants_signature({key: str(value) for key, value in trial.params.items()})
+        for trial in study.get_trials(deepcopy=False)
+        if trial.params
+    }
 
-    for _ in range(max(1, config.max_generated * 4)):
+    for _ in range(max(1, config.max_generated * 8)):
         trial = study.ask()
         total_batch = int(trial.suggest_categorical("TOTAL_BATCH_SIZE", list(config.batch_choices)))
         device_batch = total_batch
@@ -587,6 +596,12 @@ def build_optuna_experiment(
             "WARMDOWN_RATIO": _format_float_literal(warmdown_ratio),
             "FINAL_LR_FRAC": _format_float_literal(final_lr_frac),
         }
+        signature = _constants_signature(constants)
+        if signature in seen_signatures:
+            study.tell(trial, 0.0, state=optuna.trial.TrialState.FAIL)
+            continue
+        seen_signatures.add(signature)
+
         name = (
             f"Optuna trial {trial.number}: batch={total_batch}, dev={device_batch}, "
             f"ch={base_channels}, lr={constants['LEARNING_RATE']}"
@@ -837,6 +852,7 @@ def main() -> None:
                 experiment_sha = commit_experiment(exp)
             except NoOpExperimentError as exc:
                 append_result(short_commit(), 0.0, 0.0, "skip", exp.description)
+                maybe_record_optuna_result(exp, False, 0.0)
                 print(f"SKIP {exp.name}: {exc}")
                 continue
             ok, log_text = run_training(exp, args.timeout_seconds, args.python_bin)
