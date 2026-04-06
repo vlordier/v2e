@@ -38,3 +38,4 @@ f009ff8	0.629300	3.2	crash	Optuna trial 762 exploring model=fno, fno_layers=2, f
 3dea356	0.655900	5.5	keep	Optuna trial 763 exploring model=unet, family=heavy, fusion=additive, depth=3, batch=16, device_batch=16, channels=64, imu_hidden=128, lr=0.000516624, wd=0.0003.	0.680000	70.47	0.619900	14.200	919.00
 c7275c8	0.654300	3.4	keep	Optuna trial 764 exploring model=unet, family=heavy, fusion=additive, depth=3, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000521519, wd=0.	0.693300	71.67	0.618600	14.000	919.50
 afbaca8	0.657300	3.4	keep	Optuna trial 765 exploring model=unet, family=heavy, fusion=additive, depth=3, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.000515931, wd=0.	0.695700	24.31	0.620100	41.100	909.40
+ab31300	0.658800	3.4	keep	Optuna trial 766 exploring model=unet, family=heavy, fusion=additive, depth=3, batch=16, device_batch=16, channels=48, imu_hidden=128, lr=0.00105875, wd=0.	0.696400	23.68	0.620100	42.200	909.70
