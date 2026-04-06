@@ -1,4 +1,14 @@
 {
+  "optuna": {
+    "enabled": true,
+    "study_name": "v2e-imu-autoresearch",
+    "max_generated": 1,
+    "batch_choices": ["4", "8", "16"],
+    "base_channel_choices": ["32", "48", "64"],
+    "imu_hidden_choices": ["128", "160", "192"],
+    "lr_low": 0.0005,
+    "lr_high": 0.004
+  },
   "experiments": [
     {
       "name": "AdamW weight_decay=1e-4 on restored baseline",

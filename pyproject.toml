@@ -71,6 +71,7 @@ mlops = [
   "awscli>=1.36",
   "boto3>=1.34",
   "mlflow>=2.20",
+  "optuna>=3.6",
   "vastai",
 ]
 

@@ -9,6 +9,7 @@ Usage:
     python train.py  # If using pip instead of uv
 """
 
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -330,8 +331,16 @@ def get_peak_memory_mb() -> float:
 
 def setup_device() -> str:
     """Setup and return the device with optimal settings (CUDA > MPS > CPU)."""
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+
     if torch.cuda.is_available():
-        print("CUDA GPU acceleration enabled")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        print("CUDA GPU acceleration enabled (TF32 + cudnn benchmark)")
         return "cuda"
     if torch.backends.mps.is_available():
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -359,6 +368,26 @@ def create_model(device: str) -> tuple[nn.Module, int]:
         model = EventPredictor(config).to(device)
     num_params = sum(p.numel() for p in model.parameters())
     return model, num_params
+
+
+def optimize_model_for_device(model: nn.Module, device: str) -> nn.Module:
+    """Enable optional runtime optimizations for CUDA training."""
+    compile_enabled = (
+        device == "cuda"
+        and hasattr(torch, "compile")
+        and os.getenv("V2E_TORCH_COMPILE", "1").strip().lower() not in {"0", "false", "no"}
+    )
+    if not compile_enabled:
+        return model
+
+    compile_mode = os.getenv("V2E_TORCH_COMPILE_MODE", "reduce-overhead")
+    try:
+        compiled_model = torch.compile(model, mode=compile_mode)
+        print(f"torch.compile enabled (mode={compile_mode})")
+        return compiled_model
+    except Exception as exc:
+        print(f"WARNING: torch.compile unavailable, continuing without it: {exc}")
+        return model
 
 
 def augment_batch(
@@ -425,9 +454,10 @@ def _accumulate_step(
     rate_target: torch.Tensor,
 ) -> tuple[float, float, float]:
     """Run one micro-batch forward+backward; return (total, event, rate) losses."""
-    images = batch["image"].to(device)
-    imu_seq = batch["imu_seq"].to(device)
-    gt_events = batch["events"].to(device)
+    non_blocking = device != "cpu"
+    images = batch["image"].to(device, non_blocking=non_blocking)
+    imu_seq = batch["imu_seq"].to(device, non_blocking=non_blocking)
+    gt_events = batch["events"].to(device, non_blocking=non_blocking)
 
     if model.training:
         images, imu_seq, gt_events = augment_batch(images, imu_seq, gt_events)
@@ -477,7 +507,7 @@ def run_training_loop(
 
     while True:
         t0 = time.time()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         acc = {"total": 0.0, "evt": 0.0, "rate": 0.0}
 
         for _ in range(grad_accum_steps):
@@ -616,7 +646,7 @@ def load_checkpoint(
     return model, optimizer, epoch, loss
 
 
-def train(resume_from: str | None = None) -> None:
+def train(resume_from: str | None = None) -> None:  # noqa: PLR0915
     """Main training function."""
     mlflow_run = MlflowRunManager(run_name=os.getenv("MLFLOW_RUN_NAME"))
     status = "FINISHED"
@@ -627,7 +657,23 @@ def train(resume_from: str | None = None) -> None:
         print(f"Time budget: {TIME_BUDGET}s")
 
         model, num_params = create_model(device)
+        model = optimize_model_for_device(model, device)
         print(f"Model parameters: {num_params / 1e6:.2f}M")
+        if device == "cuda":
+            torch.cuda.reset_peak_memory_stats()
+
+        compile_requested = device == "cuda" and os.getenv(
+            "V2E_TORCH_COMPILE", "1"
+        ).strip().lower() not in {"0", "false", "no"}
+        mlflow_tags = {"device": device}
+        for env_name, tag_name in {
+            "AUTORESEARCH_SEARCH_KIND": "autoresearch.strategy",
+            "AUTORESEARCH_EXPERIMENT_NAME": "autoresearch.experiment",
+            "AUTORESEARCH_TRIAL_NUMBER": "autoresearch.trial_number",
+        }.items():
+            value = os.getenv(env_name, "").strip()
+            if value:
+                mlflow_tags[tag_name] = value
 
         mlflow_run.start(
             params={
@@ -644,8 +690,11 @@ def train(resume_from: str | None = None) -> None:
                 "final_eval_batch_size": FINAL_EVAL_BATCH_SIZE,
                 "time_budget_s": TIME_BUDGET,
                 "resume_from": resume_from or "",
+                "torch_compile_requested": compile_requested,
+                "torch_compile_mode": os.getenv("V2E_TORCH_COMPILE_MODE", "reduce-overhead"),
+                "dataloader_workers": os.getenv("DATALOADER_WORKERS", "auto"),
             },
-            tags={"device": device},
+            tags=mlflow_tags,
         )
 
         # Create dataloaders — val uses train IMU stats to avoid leakage
@@ -669,8 +718,11 @@ def train(resume_from: str | None = None) -> None:
             model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
         )
 
-        grad_accum_steps = TOTAL_BATCH_SIZE // DEVICE_BATCH_SIZE
-        print(f"Gradient accumulation steps: {grad_accum_steps}")
+        grad_accum_steps = max(1, math.ceil(TOTAL_BATCH_SIZE / DEVICE_BATCH_SIZE))
+        effective_batch_size = grad_accum_steps * DEVICE_BATCH_SIZE
+        print(
+            f"Gradient accumulation steps: {grad_accum_steps} (effective batch size {effective_batch_size})"
+        )
 
         if resume_from and os.path.exists(resume_from):
             model, optimizer, start_epoch, _ = load_checkpoint(
