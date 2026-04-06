@@ -39,6 +39,8 @@ if [ ! -d "$REPO_DIR/.git" ]; then
 fi
 
 cd "$REPO_DIR"
+# Persist GitHub auth for later git fetch/push commands in this repo.
+git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ${AUTH_HEADER}"
 git "${GIT_AUTH[@]}" fetch origin --prune
 git "${GIT_AUTH[@]}" fetch origin "$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" || true
 git "${GIT_AUTH[@]}" fetch origin "$RESEARCH_BRANCH:refs/remotes/origin/$RESEARCH_BRANCH" || true
