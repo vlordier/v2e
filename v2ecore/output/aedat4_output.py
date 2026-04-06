@@ -1,7 +1,5 @@
 import logging
 
-# check https://gitlab.com/inivation/dv/dv-processing to install dv-processing-python
-import dv_processing as dv
 import numpy as np
 from engineering_notation import EngNumber  # only from pip
 
@@ -25,14 +23,23 @@ class AEDat4Output:
         self.sizex = output_width
         self.sizey = output_height
 
-        self.store = dv.EventStore()
+        try:
+            import dv_processing as dv
+        except Exception as exc:
+            raise ImportError(
+                "AEDAT4 output requires the optional `dv-processing` package and a working runtime. "
+                "Install it or avoid using `--dvs_aedat4`."
+            ) from exc
+
+        self._dv = dv
+        self.store = self._dv.EventStore()
 
         resolution = (output_width, output_height)
         # Event only configuration
-        config = dv.io.MonoCameraWriter.EventOnlyConfig("DVXplorer_sample", resolution)
+        config = self._dv.io.MonoCameraWriter.EventOnlyConfig("DVXplorer_sample", resolution)
 
         # Create the writer instance, it will only have a single event output stream.
-        self.writer = dv.io.MonoCameraWriter(filepath, config)
+        self.writer = self._dv.io.MonoCameraWriter(filepath, config)
 
     def cleanup(self):
         self.close()
@@ -67,7 +74,6 @@ class AEDat4Output:
 
         if len(events) == 0:
             return
-        n = events.shape[0]
         for event in events:
             t = int(event[0] * 1e6)
             x = int(event[1])

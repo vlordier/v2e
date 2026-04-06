@@ -16,7 +16,6 @@ import math
 import os
 import pickle
 import random
-from typing import Optional, List, Tuple, Dict, Any
 
 import cv2
 import h5py
@@ -24,12 +23,18 @@ import numpy as np
 import torch  # https://pytorch.org/docs/stable/torch.html
 from screeninfo import get_monitors
 
-from v2ecore.emulator_utils import compute_event_map, lin_log
-from v2ecore.emulator_utils import rescale_intensity_frame
-from v2ecore.emulator_utils import subtract_leak_current
-from v2ecore.emulator_utils import low_pass_filter, low_pass_filter_inplace
-from v2ecore.emulator_utils import compute_photoreceptor_noise_voltage, generate_shot_noise
-from v2ecore.emulator_utils import get_compiled_step, get_compiled_step_leak, get_compiled_batched
+from v2ecore.emulator_utils import (
+    compute_event_map,
+    compute_photoreceptor_noise_voltage,
+    generate_shot_noise,
+    get_compiled_batched,
+    get_compiled_step,
+    get_compiled_step_leak,
+    lin_log,
+    low_pass_filter_inplace,
+    rescale_intensity_frame,
+    subtract_leak_current,
+)
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
 from v2ecore.output.aedat4_output import AEDat4Output
@@ -124,24 +129,37 @@ class EventEmulator:
         photoreceptor_noise: bool = False,
         leak_jitter_fraction: float = 0.1,
         noise_rate_cov_decades: float = 0.1,
+        refractory_mode: str = "hard",
+        refractory_tau_s: float = 0.0,
+        threshold_adaptation_gain: float = 0.0,
+        threshold_adaptation_tau_s: float = 0.05,
+        hot_pixel_fraction: float = 0.0,
+        hot_pixel_rate_hz: float = 0.0,
+        bursty_pixel_fraction: float = 0.0,
+        bursty_pixel_rate_hz: float = 0.0,
+        hot_pixel_on_probability: float = 0.5,
+        row_noise_rate_hz: float = 0.0,
+        scene_cut_policy: str = "none",
+        scene_cut_threshold: float = 0.5,
+        scene_cut_hold_frames: int = 1,
         seed: int = 0,
-        output_folder: Optional[str] = None,
-        dvs_h5: Optional[str] = None,
-        dvs_aedat2: Optional[str] = None,
-        dvs_aedat4: Optional[str] = None,
-        dvs_text: Optional[str] = None,
+        output_folder: str | None = None,
+        dvs_h5: str | None = None,
+        dvs_aedat2: str | None = None,
+        dvs_aedat4: str | None = None,
+        dvs_text: str | None = None,
         # change as you like to see 'baseLogFrame',
         # 'lpLogFrame', 'diff_frame'
-        show_dvs_model_state: Optional[str] = None,
+        show_dvs_model_state: str | None = None,
         save_dvs_model_state: bool = False,
-        output_width: Optional[int] = None,
-        output_height: Optional[int] = None,
+        output_width: int | None = None,
+        output_height: int | None = None,
         device: str = "cuda",
-        cs_lambda_pixels: Optional[float] = None,
-        cs_tau_p_ms: Optional[float] = None,
+        cs_lambda_pixels: float | None = None,
+        cs_tau_p_ms: float | None = None,
         hdr: bool = False,
         scidvs: bool = False,
-        record_single_pixel_states: Optional[Tuple[int, int]] = None,
+        record_single_pixel_states: tuple[int, int] | None = None,
         label_signal_noise: bool = False,
     ) -> None:
         """
@@ -193,9 +211,7 @@ class EventEmulator:
 
         self.no_events_warning_count = 0
         logger.info(
-            "ON/OFF log_e temporal contrast thresholds: {} / {} +/- {}".format(
-                pos_thres, neg_thres, sigma_thres
-            )
+            f"ON/OFF log_e temporal contrast thresholds: {pos_thres} / {neg_thres} +/- {sigma_thres}"
         )
 
         self.reset()
@@ -222,8 +238,8 @@ class EventEmulator:
         self.refractory_period_s = refractory_period_s
         self.shot_noise_rate_hz = shot_noise_rate_hz
         self.photoreceptor_noise = photoreceptor_noise
-        self.photoreceptor_noise_vrms: Optional[float] = None
-        self.photoreceptor_noise_arr: Optional[np.ndarray] = (
+        self.photoreceptor_noise_vrms: float | None = None
+        self.photoreceptor_noise_arr: np.ndarray | None = (
             None  # separate noise source that is lowpass filtered to provide intensity-independent noise to add to intensity-dependent filtered photoreceptor output
         )
         if photoreceptor_noise:
@@ -241,6 +257,21 @@ class EventEmulator:
 
         self.leak_jitter_fraction = leak_jitter_fraction
         self.noise_rate_cov_decades = noise_rate_cov_decades
+        self.refractory_mode = refractory_mode.lower()
+        self.refractory_tau_s = (
+            refractory_tau_s if refractory_tau_s > 0 else max(refractory_period_s, 1e-6)
+        )
+        self.threshold_adaptation_gain = max(0.0, threshold_adaptation_gain)
+        self.threshold_adaptation_tau_s = max(1e-6, threshold_adaptation_tau_s)
+        self.hot_pixel_fraction = min(max(hot_pixel_fraction, 0.0), 1.0)
+        self.hot_pixel_rate_hz = max(0.0, hot_pixel_rate_hz)
+        self.bursty_pixel_fraction = min(max(bursty_pixel_fraction, 0.0), 1.0)
+        self.bursty_pixel_rate_hz = max(0.0, bursty_pixel_rate_hz)
+        self.hot_pixel_on_probability = min(max(hot_pixel_on_probability, 0.0), 1.0)
+        self.row_noise_rate_hz = max(0.0, row_noise_rate_hz)
+        self.scene_cut_policy = scene_cut_policy.lower()
+        self.scene_cut_threshold = max(0.0, scene_cut_threshold)
+        self.scene_cut_hold_frames = max(0, scene_cut_hold_frames)
 
         self.SHOT_NOISE_INTEN_FACTOR = (
             0.25  # this factor models the slight increase of shot noise with intensity
@@ -287,7 +318,7 @@ class EventEmulator:
         self.cs_alpha_warning_printed = False
         self.cs_tau_p_ms = cs_tau_p_ms
         self.cs_lambda_pixels = cs_lambda_pixels
-        self.cs_surround_frame: Optional[torch.Tensor] = None  # surround frame state
+        self.cs_surround_frame: torch.Tensor | None = None  # surround frame state
         self.csdvs_enabled = False  # flag to run center surround DVS emulation
         if self.cs_lambda_pixels is not None:
             self.csdvs_enabled = True
@@ -324,7 +355,7 @@ class EventEmulator:
         if self.record_single_pixel_states is None:
             self.single_pixel_states = None
         else:
-            if not (type(self.record_single_pixel_states) is tuple):
+            if type(self.record_single_pixel_states) is not tuple:
                 raise ValueError(
                     f"--record_single_pixel_states {self.record_single_pixel_states} should be a tuple, e.g. (10,20)"
                 )
@@ -333,7 +364,7 @@ class EventEmulator:
                     f"--record_single_pixel_states {self.record_single_pixel_states} should have two pixel addresses (x,y)"
                 )
             for i in self.record_single_pixel_states:
-                if not (type(i) is int):
+                if type(i) is not int:
                     raise ValueError(
                         f"--record_single_pixel_states {self.record_single_pixel_states} should have two integer-value pixel addresses (x,y)"
                     )
@@ -487,7 +518,7 @@ class EventEmulator:
             logger.info(f"closing video AVI {vw}")
             self.video_writers[vw].release()
 
-        if not self.record_single_pixel_states is None:
+        if self.record_single_pixel_states is not None:
             self.save_recorded_single_pixel_states()
 
     def save_recorded_single_pixel_states(self):
@@ -580,12 +611,39 @@ class EventEmulator:
                 math.log(10) * self.noise_rate_cov_decades * self.noise_rate_array
             )
 
-        # refractory period
-        if self.refractory_period_s > 0:
-            self.timestamp_mem = (
-                torch.zeros(first_frame_linear.shape, dtype=torch.float32, device=self.device)
-                - self.refractory_period_s
+        if self.threshold_adaptation_gain > 0:
+            self.threshold_adaptation_state = torch.zeros(
+                first_frame_linear.shape, dtype=torch.float32, device=self.device
             )
+
+        if self.hot_pixel_fraction > 0 or self.bursty_pixel_fraction > 0:
+            self.hot_pixel_mask = (
+                torch.rand(first_frame_linear.shape, dtype=torch.float32, device=self.device)
+                < self.hot_pixel_fraction
+            )
+            remaining_pixels = ~self.hot_pixel_mask
+            self.bursty_pixel_mask = remaining_pixels & (
+                torch.rand(first_frame_linear.shape, dtype=torch.float32, device=self.device)
+                < self.bursty_pixel_fraction
+            )
+            self.hot_pixel_on_mask = (
+                torch.rand(first_frame_linear.shape, dtype=torch.float32, device=self.device)
+                < self.hot_pixel_on_probability
+            )
+        elif self.row_noise_rate_hz > 0:
+            self.hot_pixel_on_mask = (
+                torch.rand(first_frame_linear.shape, dtype=torch.float32, device=self.device)
+                < self.hot_pixel_on_probability
+            )
+
+        # refractory period and event-history state
+        if self.refractory_period_s > 0 or self.refractory_mode == "soft":
+            self.timestamp_mem = torch.zeros(
+                first_frame_linear.shape, dtype=torch.float32, device=self.device
+            ) - max(self.refractory_period_s, self.refractory_tau_s)
+
+        if self.log_new_frame is not None:
+            self.prev_log_new_frame = torch.clone(self.log_new_frame).detach()
 
     def set_dvs_params(self, model: str):
         if model == "clean":
@@ -614,30 +672,134 @@ class EventEmulator:
             #  logger.error(
             #      "dvs_params {} not known: "
             #      "use 'clean' or 'noisy'".format(model))
-            logger.warning(
-                "dvs_params {} not known: Using commandline assigned options".format(model)
-            )
+            logger.warning(f"dvs_params {model} not known: Using commandline assigned options")
             #  sys.exit(1)
+
+        self.refractory_mode = "hard"
+        self.refractory_tau_s = max(self.refractory_period_s, 1e-6)
+        self.threshold_adaptation_gain = 0.0
+        self.hot_pixel_fraction = 0.0
+        self.hot_pixel_rate_hz = 0.0
+        self.bursty_pixel_fraction = 0.0
+        self.bursty_pixel_rate_hz = 0.0
+        self.row_noise_rate_hz = 0.0
+        self.scene_cut_policy = "none"
+        self.scene_cut_hold_frames = 0
+
         logger.info(
-            "set DVS model params with option '{}' "
+            f"set DVS model params with option '{model}' "
             "to following values:\n"
-            "pos_thres={}\n"
-            "neg_thres={}\n"
-            "sigma_thres={}\n"
-            "cutoff_hz={}\n"
-            "leak_rate_hz={}\n"
-            "shot_noise_rate_hz={}\n"
-            "refractory_period_s={}".format(
-                model,
-                self.pos_thres,
-                self.neg_thres,
-                self.sigma_thres,
-                self.cutoff_hz,
-                self.leak_rate_hz,
-                self.shot_noise_rate_hz,
-                self.refractory_period_s,
-            )
+            f"pos_thres={self.pos_thres}\n"
+            f"neg_thres={self.neg_thres}\n"
+            f"sigma_thres={self.sigma_thres}\n"
+            f"cutoff_hz={self.cutoff_hz}\n"
+            f"leak_rate_hz={self.leak_rate_hz}\n"
+            f"shot_noise_rate_hz={self.shot_noise_rate_hz}\n"
+            f"refractory_period_s={self.refractory_period_s}"
         )
+
+    def _get_effective_thresholds(self, delta_time: float):
+        """Return per-pixel thresholds after optional activity adaptation."""
+        if self.threshold_adaptation_gain > 0:
+            if self.threshold_adaptation_state is None:
+                self.threshold_adaptation_state = torch.zeros_like(
+                    self.base_log_frame if self.base_log_frame is not None else self.lp_log_frame,
+                    dtype=torch.float32,
+                )
+            if delta_time > 0:
+                decay = math.exp(-delta_time / self.threshold_adaptation_tau_s)
+                self.threshold_adaptation_state.mul_(decay)
+            scale = 1.0 + self.threshold_adaptation_gain * self.threshold_adaptation_state
+            self.dynamic_pos_thres = self.pos_thres * scale
+            self.dynamic_neg_thres = self.neg_thres * scale
+        else:
+            self.dynamic_pos_thres = self.pos_thres
+            self.dynamic_neg_thres = self.neg_thres
+        return self.dynamic_pos_thres, self.dynamic_neg_thres
+
+    def _sample_defect_noise(self, delta_time: float, shape: tuple[int, int]):
+        """Generate experimental defect-driven noise masks."""
+        if (
+            self.hot_pixel_rate_hz <= 0
+            and self.bursty_pixel_rate_hz <= 0
+            and self.row_noise_rate_hz <= 0
+        ):
+            return None, None
+
+        on_mask = torch.zeros(shape, dtype=torch.bool, device=self.device)
+        off_mask = torch.zeros(shape, dtype=torch.bool, device=self.device)
+
+        if self.hot_pixel_rate_hz > 0 and self.hot_pixel_mask is not None:
+            hot_fire = self.hot_pixel_mask & (
+                torch.rand(shape, dtype=torch.float32, device=self.device)
+                < min(self.hot_pixel_rate_hz * delta_time, 1.0)
+            )
+            on_mask |= hot_fire & self.hot_pixel_on_mask
+            off_mask |= hot_fire & ~self.hot_pixel_on_mask
+
+        if self.bursty_pixel_rate_hz > 0 and self.bursty_pixel_mask is not None:
+            burst_fire = self.bursty_pixel_mask & (
+                torch.rand(shape, dtype=torch.float32, device=self.device)
+                < min(self.bursty_pixel_rate_hz * delta_time, 1.0)
+            )
+            burst_polarity = (
+                torch.rand(shape, dtype=torch.float32, device=self.device)
+                < self.hot_pixel_on_probability
+            )
+            on_mask |= burst_fire & burst_polarity
+            off_mask |= burst_fire & ~burst_polarity
+
+        if self.row_noise_rate_hz > 0:
+            row_fire = torch.rand((shape[0], 1), dtype=torch.float32, device=self.device) < min(
+                self.row_noise_rate_hz * delta_time, 1.0
+            )
+            row_polarity = (
+                torch.rand((shape[0], 1), dtype=torch.float32, device=self.device)
+                < self.hot_pixel_on_probability
+            )
+            on_mask |= row_fire.expand(shape[0], shape[1]) & row_polarity.expand(shape[0], shape[1])
+            off_mask |= row_fire.expand(shape[0], shape[1]) & (~row_polarity).expand(
+                shape[0], shape[1]
+            )
+
+        return on_mask, off_mask
+
+    def _apply_scene_cut_policy(self, t_frame: float, reference_frame: torch.Tensor) -> bool:
+        """Optionally reset/suppress activity around abrupt input discontinuities."""
+        if self.scene_cut_policy == "none" or self.log_new_frame is None:
+            self.prev_log_new_frame = (
+                torch.clone(self.log_new_frame).detach() if self.log_new_frame is not None else None
+            )
+            return False
+
+        if self.prev_log_new_frame is None:
+            self.prev_log_new_frame = torch.clone(self.log_new_frame).detach()
+            return False
+
+        frame_jump = torch.mean(torch.abs(self.log_new_frame - self.prev_log_new_frame)).item()
+        self.prev_log_new_frame = torch.clone(self.log_new_frame).detach()
+
+        if frame_jump > self.scene_cut_threshold:
+            logger.info(
+                f"scene cut detected at frame #{self.frame_counter:,} (mean log jump {frame_jump:.3f}); applying {self.scene_cut_policy} policy"
+            )
+            self.base_log_frame = torch.clone(reference_frame).detach()
+            if self.threshold_adaptation_state is not None:
+                self.threshold_adaptation_state.zero_()
+            if self.timestamp_mem is not None:
+                self.timestamp_mem.fill_(
+                    t_frame - max(self.refractory_period_s, self.refractory_tau_s)
+                )
+            if self.scene_cut_policy == "suppress":
+                self.scene_cut_frames_left = self.scene_cut_hold_frames
+            return True
+
+        if self.scene_cut_policy == "suppress" and self.scene_cut_frames_left > 0:
+            self.scene_cut_frames_left -= 1
+            self.base_log_frame = torch.clone(reference_frame).detach()
+            return True
+
+        return False
 
     def reset(self):
         """resets so that next use will reinitialize the base frame"""
@@ -646,19 +808,28 @@ class EventEmulator:
         self.num_events_off = 0
 
         # add names of new states to potentially show with --show_model_states all
-        self.new_frame: Optional[np.ndarray] = None  # new frame that comes in [height, width]
-        self.log_new_frame: Optional[np.ndarray] = None  #  [height, width]
-        self.lp_log_frame: Optional[np.ndarray] = None  # lowpass stage 0
-        self.lp_log_frame: Optional[np.ndarray] = None  # stage 1
-        self.cs_surround_frame: Optional[np.ndarray] = None
-        self.c_minus_s_frame: Optional[np.ndarray] = None
-        self.base_log_frame: Optional[np.ndarray] = (
+        self.new_frame: np.ndarray | None = None  # new frame that comes in [height, width]
+        self.log_new_frame: np.ndarray | None = None  #  [height, width]
+        self.lp_log_frame: np.ndarray | None = None  # lowpass stage 0
+        self.lp_log_frame: np.ndarray | None = None  # stage 1
+        self.cs_surround_frame: np.ndarray | None = None
+        self.c_minus_s_frame: np.ndarray | None = None
+        self.base_log_frame: np.ndarray | None = (
             None  # memorized log intensities at change detector
         )
-        self.diff_frame: Optional[np.ndarray] = None  # [height, width]
-        self.scidvs_highpass: Optional[np.ndarray] = None
-        self.scidvs_previous_photo: Optional[np.ndarray] = None
-        self.scidvs_tau_arr: Optional[np.ndarray] = None
+        self.diff_frame: np.ndarray | None = None  # [height, width]
+        self.scidvs_highpass: np.ndarray | None = None
+        self.scidvs_previous_photo: np.ndarray | None = None
+        self.scidvs_tau_arr: np.ndarray | None = None
+        self.timestamp_mem: torch.Tensor | None = None
+        self.threshold_adaptation_state: torch.Tensor | None = None
+        self.dynamic_pos_thres: torch.Tensor | None = None
+        self.dynamic_neg_thres: torch.Tensor | None = None
+        self.hot_pixel_mask: torch.Tensor | None = None
+        self.bursty_pixel_mask: torch.Tensor | None = None
+        self.hot_pixel_on_mask: torch.Tensor | None = None
+        self.prev_log_new_frame: torch.Tensor | None = None
+        self.scene_cut_frames_left = 0
 
         self.frame_counter = 0
 
@@ -682,7 +853,7 @@ class EventEmulator:
         img = (img - min) / (max - min)
 
         cv2.namedWindow(name, cv2.WINDOW_NORMAL)
-        if not name in self.show_list:
+        if name not in self.show_list:
             d = len(self.show_list) * 200
             # (x,y,w,h)=cv2.getWindowImageRect(name)
             cv2.moveWindow(
@@ -749,9 +920,7 @@ class EventEmulator:
 
         if t_frame < self.t_previous:
             raise ValueError(
-                "this frame time={} must be later than previous frame time={}".format(
-                    t_frame, self.t_previous
-                )
+                f"this frame time={t_frame} must be later than previous frame time={self.t_previous}"
             )
 
         # compute time difference between this and the previous frame
@@ -779,7 +948,14 @@ class EventEmulator:
             and not self.csdvs_enabled
             and not self.photoreceptor_noise
             and self.show_dvs_model_state is None
+            and self.refractory_mode == "hard"
+            and self.threshold_adaptation_gain == 0
+            and self.hot_pixel_rate_hz == 0
+            and self.bursty_pixel_rate_hz == 0
+            and self.row_noise_rate_hz == 0
+            and self.scene_cut_policy == "none"
         ):
+            pos_event_thres, neg_event_thres = self._get_effective_thresholds(delta_time)
             if inten01 is not None and self.leak_rate_hz > 0:
                 # Fully fused: lin_log + lowpass + leak + diff + event_map
                 # Pre-generate random values outside compiled kernel for max fusion
@@ -791,8 +967,8 @@ class EventEmulator:
                         self.new_frame,
                         self.lp_log_frame,
                         self.base_log_frame,
-                        self.pos_thres,
-                        self.neg_thres,
+                        pos_event_thres,
+                        neg_event_thres,
                         inten01,
                         self.noise_rate_array,
                         self._rand_buf,
@@ -810,8 +986,8 @@ class EventEmulator:
                     self.new_frame,
                     self.lp_log_frame,
                     self.base_log_frame,
-                    self.pos_thres,
-                    self.neg_thres,
+                    pos_event_thres,
+                    neg_event_thres,
                     inten01,
                     delta_time,
                     tau,
@@ -822,7 +998,7 @@ class EventEmulator:
                         base_log_frame=self.base_log_frame,
                         leak_rate_hz=self.leak_rate_hz,
                         delta_time=delta_time,
-                        pos_thres=self.pos_thres,
+                        pos_thres=pos_event_thres,
                         leak_jitter_fraction=self.leak_jitter_fraction,
                         noise_rate_array=self.noise_rate_array,
                     )
@@ -831,14 +1007,14 @@ class EventEmulator:
                 self.log_new_frame = lin_log(self.new_frame)
                 self.diff_frame = self.log_new_frame - self.base_log_frame
                 pos_evts_frame, neg_evts_frame = compute_event_map(
-                    self.diff_frame, self.pos_thres, self.neg_thres
+                    self.diff_frame, pos_event_thres, neg_event_thres
                 )
                 if self.leak_rate_hz > 0:
                     self.base_log_frame = subtract_leak_current(
                         base_log_frame=self.base_log_frame,
                         leak_rate_hz=self.leak_rate_hz,
                         delta_time=delta_time,
-                        pos_thres=self.pos_thres,
+                        pos_thres=pos_event_thres,
                         leak_jitter_fraction=self.leak_jitter_fraction,
                         noise_rate_array=self.noise_rate_array,
                     )
@@ -882,7 +1058,6 @@ class EventEmulator:
                 )
 
                 # Vectorized assembly with 1D nonzero (8.3x faster than 2D)
-                W = self.output_width
                 pe_flat = pe_cpu.ravel()
                 ne_flat = ne_cpu.ravel()
                 pos_idx = (pe_flat > 0).nonzero()[0]
@@ -931,8 +1106,8 @@ class EventEmulator:
                 # Update base frame
                 final_pos = torch.from_numpy(pe_cpu).to(self.device, dtype=torch.int32)
                 final_neg = torch.from_numpy(ne_cpu).to(self.device, dtype=torch.int32)
-                self.base_log_frame += final_pos * self.pos_thres
-                self.base_log_frame -= final_neg * self.neg_thres
+                self.base_log_frame += final_pos * pos_event_thres
+                self.base_log_frame -= final_neg * neg_event_thres
 
                 self.t_previous = t_frame
                 self.frame_counter += 1
@@ -1014,12 +1189,14 @@ class EventEmulator:
                 ) - delta_time * self.scidvs_dvdt(self.scidvs_highpass, self.scidvs_tau_arr)
                 self.scidvs_previous_photo = torch.clone(self.lp_log_frame)
 
+            pos_event_thres, neg_event_thres = self._get_effective_thresholds(delta_time)
+
             if self.leak_rate_hz > 0:
                 self.base_log_frame = subtract_leak_current(
                     base_log_frame=self.base_log_frame,
                     leak_rate_hz=self.leak_rate_hz,
                     delta_time=delta_time,
-                    pos_thres=self.pos_thres,
+                    pos_thres=pos_event_thres,
                     leak_jitter_fraction=self.leak_jitter_fraction,
                     noise_rate_array=self.noise_rate_array,
                 )
@@ -1031,11 +1208,20 @@ class EventEmulator:
             )
 
             if not self.csdvs_enabled:
-                self.diff_frame = photoreceptor + self.photoreceptor_noise_arr - self.base_log_frame
+                reference_frame = photoreceptor + self.photoreceptor_noise_arr
             else:
-                self.c_minus_s_frame = (
+                reference_frame = (
                     photoreceptor + self.photoreceptor_noise_arr - self.cs_surround_frame
                 )
+
+            if self._apply_scene_cut_policy(t_frame, reference_frame):
+                self.t_previous = t_frame
+                return None
+
+            if not self.csdvs_enabled:
+                self.diff_frame = reference_frame - self.base_log_frame
+            else:
+                self.c_minus_s_frame = reference_frame
                 self.diff_frame = self.c_minus_s_frame - self.base_log_frame
 
             if self.show_dvs_model_state is not None:
@@ -1052,7 +1238,7 @@ class EventEmulator:
                     v2e_quit()
 
             pos_evts_frame, neg_evts_frame = compute_event_map(
-                self.diff_frame, self.pos_thres, self.neg_thres
+                self.diff_frame, pos_event_thres, neg_event_thres
             )
             max_num_events_any_pixel = max(pos_evts_frame.max(), neg_evts_frame.max()).item()
             if max_num_events_any_pixel > 100:
@@ -1111,17 +1297,47 @@ class EventEmulator:
                 neg_cord = neg_evts_frame >= i + 1
 
                 # filter events with refractory_period
-                # only filter when refractory_period_s is large enough
-                # otherwise, pass everything
-                if self.refractory_period_s > ts_step:
-                    pos_time_since_last_spike = pos_cord * ts[i] - self.timestamp_mem
-                    neg_time_since_last_spike = neg_cord * ts[i] - self.timestamp_mem
+                if self.timestamp_mem is not None and self.refractory_period_s > 0:
+                    pos_time_since_last_spike = torch.where(
+                        pos_cord,
+                        ts[i] - self.timestamp_mem,
+                        torch.zeros_like(self.timestamp_mem),
+                    )
+                    neg_time_since_last_spike = torch.where(
+                        neg_cord,
+                        ts[i] - self.timestamp_mem,
+                        torch.zeros_like(self.timestamp_mem),
+                    )
 
-                    # filter the events
-                    pos_cord = pos_time_since_last_spike > self.refractory_period_s
-                    neg_cord = neg_time_since_last_spike > self.refractory_period_s
+                    if self.refractory_mode == "soft":
+                        pos_recovery = 1 - torch.exp(
+                            -torch.clamp(pos_time_since_last_spike, min=0.0) / self.refractory_tau_s
+                        )
+                        neg_recovery = 1 - torch.exp(
+                            -torch.clamp(neg_time_since_last_spike, min=0.0) / self.refractory_tau_s
+                        )
+                        pos_recovery = torch.where(
+                            pos_time_since_last_spike >= self.refractory_period_s,
+                            torch.ones_like(pos_recovery),
+                            torch.clamp(pos_recovery, min=0.0, max=1.0),
+                        )
+                        neg_recovery = torch.where(
+                            neg_time_since_last_spike >= self.refractory_period_s,
+                            torch.ones_like(neg_recovery),
+                            torch.clamp(neg_recovery, min=0.0, max=1.0),
+                        )
+                        pos_cord = pos_cord & (
+                            torch.rand(pos_cord.shape, dtype=torch.float32, device=self.device)
+                            < pos_recovery
+                        )
+                        neg_cord = neg_cord & (
+                            torch.rand(neg_cord.shape, dtype=torch.float32, device=self.device)
+                            < neg_recovery
+                        )
+                    elif self.refractory_period_s > ts_step:
+                        pos_cord = pos_time_since_last_spike > self.refractory_period_s
+                        neg_cord = neg_time_since_last_spike > self.refractory_period_s
 
-                    # assign new history
                     self.timestamp_mem = torch.where(pos_cord, ts[i], self.timestamp_mem)
                     self.timestamp_mem = torch.where(neg_cord, ts[i], self.timestamp_mem)
 
@@ -1203,7 +1419,6 @@ class EventEmulator:
                 events = torch.cat(
                     (events, shot_noise_events), dim=0
                 )  # stack signal events before noise events, [N,4]
-                num_total_events = len(events)
                 # idx = torch.randperm(num_total_events)  # makes timestamps nonmonotonic
                 # events = events[idx].view(events.size())
                 if self.label_signal_noise:
@@ -1211,10 +1426,31 @@ class EventEmulator:
                         (num_shot_noise_events), dtype=torch.bool, device=self.device
                     )
                     signnoise_label = torch.cat((signnoise_label, noise_label))
-                    signnoise_label = signnoise_label[idx].view(signnoise_label.size())
 
         # update base log frame according to the final
         # number of output events
+        defect_on_cord, defect_off_cord = self._sample_defect_noise(
+            delta_time, self.new_frame.shape
+        )
+        if defect_on_cord is not None and defect_off_cord is not None:
+            defect_on_xy = defect_on_cord.nonzero(as_tuple=True)
+            defect_off_xy = defect_off_cord.nonzero(as_tuple=True)
+            defect_events = self.get_event_list_from_coords(defect_on_xy, defect_off_xy, ts[-1])
+            if defect_events is not None:
+                events = torch.cat((events, defect_events), dim=0)
+                if self.label_signal_noise:
+                    defect_label = torch.zeros(
+                        (len(defect_events)), dtype=torch.bool, device=self.device
+                    )
+                    signnoise_label = (
+                        defect_label
+                        if signnoise_label is None
+                        else torch.cat((signnoise_label, defect_label))
+                    )
+                if self.timestamp_mem is not None:
+                    defect_mask = defect_on_cord | defect_off_cord
+                    self.timestamp_mem = torch.where(defect_mask, ts[-1], self.timestamp_mem)
+
         # update the base frame, after we know how many events per pixel
         # add to memorized brightness values just the events we emitted.
         # don't add the remainder.
@@ -1227,13 +1463,26 @@ class EventEmulator:
         # Reset base_log_frame to current photoreceptor output when events fire.
         # This models the pixel's adaptive behavior - it "remembers" the log intensity
         # at the time of the event, which affects when the next event can fire.
-        self.base_log_frame += final_pos_evts_frame * self.pos_thres
-        self.base_log_frame -= final_neg_evts_frame * self.neg_thres
+        self.base_log_frame += final_pos_evts_frame * pos_event_thres
+        self.base_log_frame -= final_neg_evts_frame * neg_event_thres
+
+        if self.threshold_adaptation_gain > 0 and self.threshold_adaptation_state is not None:
+            self.threshold_adaptation_state += final_pos_evts_frame.to(torch.float32)
+            self.threshold_adaptation_state += final_neg_evts_frame.to(torch.float32)
+            if defect_on_cord is not None and defect_off_cord is not None:
+                self.threshold_adaptation_state += (defect_on_cord | defect_off_cord).to(
+                    torch.float32
+                )
 
         # however, if we made a shot noise event, then just memorize the log intensity at this point, so that the pixels are reset and forget the log intensity input
         if not self.photoreceptor_noise and self.shot_noise_rate_hz > 0:
             self.base_log_frame[shot_on_xy] = self.lp_log_frame[shot_on_xy]
             self.base_log_frame[shot_off_xy] = self.lp_log_frame[shot_off_xy]
+
+        if defect_on_cord is not None and defect_off_cord is not None:
+            defect_xy = (defect_on_cord | defect_off_cord).nonzero(as_tuple=True)
+            if len(defect_xy[0]) > 0:
+                self.base_log_frame[defect_xy] = self.lp_log_frame[defect_xy]
 
         if len(events) > 0:
             events = (
@@ -1276,7 +1525,7 @@ class EventEmulator:
             # determine after the events are added
             self.frame_ev_idx_dataset[self.frame_counter - 1] = self.dvs_h5_dataset.shape[0]
 
-        if not self.record_single_pixel_states is None:
+        if self.record_single_pixel_states is not None:
             if self.single_pixel_sample_count < self.SINGLE_PIXEL_MAX_SAMPLES:
                 k = self.single_pixel_sample_count
                 if k % 250 == 0:
@@ -1435,7 +1684,7 @@ class EventEmulator:
                 steps < num_steps
                 and max_change > EventEmulator.MAX_CHANGE_TO_TERMINATE_EULER_SURROUND_STEPPING
             ):
-                if not self.show_dvs_model_state is None and steps % 100 == 0:
+                if self.show_dvs_model_state is not None and steps % 100 == 0:
                     cv2.pollKey()  # allow movement of windows and resizing
                 diff = p_ten - h_ten
                 p_term = alpha_p * diff

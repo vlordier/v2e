@@ -587,6 +587,19 @@ def main():
         leak_jitter_fraction=args.leak_jitter_fraction,
         noise_rate_cov_decades=args.noise_rate_cov_decades,
         refractory_period_s=args.refractory_period,
+        refractory_mode=args.refractory_mode,
+        refractory_tau_s=args.refractory_tau_s,
+        threshold_adaptation_gain=args.threshold_adaptation_gain,
+        threshold_adaptation_tau_s=args.threshold_adaptation_tau_s,
+        hot_pixel_fraction=args.hot_pixel_fraction,
+        hot_pixel_rate_hz=args.hot_pixel_rate_hz,
+        bursty_pixel_fraction=args.bursty_pixel_fraction,
+        bursty_pixel_rate_hz=args.bursty_pixel_rate_hz,
+        hot_pixel_on_probability=args.hot_pixel_on_probability,
+        row_noise_rate_hz=args.row_noise_rate_hz,
+        scene_cut_policy=args.scene_cut_policy,
+        scene_cut_threshold=args.scene_cut_threshold,
+        scene_cut_hold_frames=args.scene_cut_hold_frames,
         seed=args.dvs_emulator_seed,
         output_folder=output_folder,
         dvs_h5=dvs_h5,
@@ -918,9 +931,7 @@ def main():
     throughputStr = (
         (str(eng(framePerS)) + "fr/s") if framePerS > 1 else (str(eng(sPerFrame)) + "s/fr")
     )
-    timestr = (
-        f"done processing {num_frames} frames in {eng(totalTime)}s ({throughputStr})\n **************** see output folder {output_folder}"
-    )
+    timestr = f"done processing {num_frames} frames in {eng(totalTime)}s ({throughputStr})\n **************** see output folder {output_folder}"
     logger.info(
         f"generated total {eng(emulator.num_events_total)} events ({eng(emulator.num_events_on)} on, {eng(emulator.num_events_off)} off)"
     )

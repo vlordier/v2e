@@ -250,6 +250,86 @@ def v2e_args(parser):
         "Set to 0 to disable this feature.",
     )
     modelGroup.add_argument(
+        "--refractory_mode",
+        type=str,
+        default="hard",
+        choices=("hard", "soft"),
+        help="Experimental refractory model. 'hard' keeps the classic dead-time filter; 'soft' uses a gradual probabilistic recovery.",
+    )
+    modelGroup.add_argument(
+        "--refractory_tau_s",
+        type=float,
+        default=0.0,
+        help="Experimental soft-recovery time constant in seconds. If <=0, `--refractory_period` is reused.",
+    )
+    modelGroup.add_argument(
+        "--threshold_adaptation_gain",
+        type=float,
+        default=0.0,
+        help="Experimental post-spike threshold boost. Larger values make thresholds adapt more strongly after recent activity.",
+    )
+    modelGroup.add_argument(
+        "--threshold_adaptation_tau_s",
+        type=float,
+        default=0.05,
+        help="Decay time constant in seconds for experimental threshold adaptation.",
+    )
+    modelGroup.add_argument(
+        "--hot_pixel_fraction",
+        type=float,
+        default=0.0,
+        help="Experimental fraction of persistent hot pixels in the sensor array.",
+    )
+    modelGroup.add_argument(
+        "--hot_pixel_rate_hz",
+        type=float,
+        default=0.0,
+        help="Experimental event rate in Hz for persistent hot pixels.",
+    )
+    modelGroup.add_argument(
+        "--bursty_pixel_fraction",
+        type=float,
+        default=0.0,
+        help="Experimental fraction of intermittently bursty defect pixels.",
+    )
+    modelGroup.add_argument(
+        "--bursty_pixel_rate_hz",
+        type=float,
+        default=0.0,
+        help="Experimental event rate in Hz for bursty defect pixels.",
+    )
+    modelGroup.add_argument(
+        "--hot_pixel_on_probability",
+        type=float,
+        default=0.5,
+        help="Probability that experimental hot/bursty defect events are ON-polarity instead of OFF-polarity.",
+    )
+    modelGroup.add_argument(
+        "--row_noise_rate_hz",
+        type=float,
+        default=0.0,
+        help="Experimental rate in Hz for row-correlated artifact bursts.",
+    )
+    modelGroup.add_argument(
+        "--scene_cut_policy",
+        type=str,
+        default="none",
+        choices=("none", "reset", "suppress"),
+        help="Experimental handling for abrupt scene cuts before event generation.",
+    )
+    modelGroup.add_argument(
+        "--scene_cut_threshold",
+        type=float,
+        default=0.5,
+        help="Experimental mean log-intensity jump threshold used to detect scene cuts.",
+    )
+    modelGroup.add_argument(
+        "--scene_cut_hold_frames",
+        type=int,
+        default=1,
+        help="When using `--scene_cut_policy suppress`, hold event generation for this many extra frames after a cut.",
+    )
+    modelGroup.add_argument(
         "--dvs_emulator_seed",
         type=int,
         default=0,
