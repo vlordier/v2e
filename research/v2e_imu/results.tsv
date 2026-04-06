@@ -18,3 +18,4 @@ e6832f6	0.000000	0.0	crash	Best batch-size configuration with stronger AdamW reg
 e2c6037	0.000000	0.0	crash	Test mild AdamW regularization on the restored batch=4 LR=2e-3 baseline. failed
 ecfd3ed	0.000100	1.0	discard	Retest the strongest scheduler shape on the restored batch=4 LR=2e-3 baseline.
 56378cb	0.000100	1.0	discard	Test a slightly faster LR on the best batch=4 configuration.
+9c10345	0.000100	1.6	discard	Optuna trial 509 exploring batch=8, device_batch=8, channels=32, imu_hidden=160, lr=0.00217983, wd=1e-05.
