@@ -61,9 +61,13 @@ echo "[bootstrap] repo_dir=$REPO_DIR"
 echo "[bootstrap] base_branch=$BASE_BRANCH research_branch=$RESEARCH_BRANCH"
 echo "[bootstrap] log_dir=$LOG_DIR"
 
-if command -v aws >/dev/null 2>&1 && [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
   echo "[bootstrap] validating AWS credentials"
-  if ! aws sts get-caller-identity >/dev/null; then
+  if ! "$REPO_DIR/.venv/bin/python" - <<'PY'
+from research.v2e_imu.autoresearch_runner import aws_identity_preflight_ok
+raise SystemExit(0 if aws_identity_preflight_ok() else 1)
+PY
+  then
     echo "[bootstrap] warning: AWS STS preflight failed; continuing without blocking startup" >&2
   fi
 fi
