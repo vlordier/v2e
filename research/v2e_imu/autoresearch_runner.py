@@ -563,7 +563,17 @@ def build_optuna_experiment(
         print(f"WARNING: Optuna not available; skipping generated experiments: {exc}")
         return None
 
-    sampler = optuna.samplers.TPESampler(seed=config.sampler_seed)
+    existing_trial_count = 0
+    try:
+        existing_study = optuna.load_study(
+            study_name=config.study_name,
+            storage=config.storage_url,
+        )
+        existing_trial_count = len(existing_study.get_trials(deepcopy=False))
+    except KeyError:
+        existing_trial_count = 0
+
+    sampler = optuna.samplers.TPESampler(seed=config.sampler_seed + existing_trial_count)
     study = optuna.create_study(
         direction="maximize",
         study_name=config.study_name,
