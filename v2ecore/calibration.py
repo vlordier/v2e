@@ -73,6 +73,40 @@ def _lin_log_np(gray: np.ndarray) -> np.ndarray:
     ).astype(np.float32)
 
 
+def _load_frames_gray(
+    video_path: str | Path, stop_time: float, start_time: float = 0.0
+) -> tuple[list[np.ndarray], float]:
+    """Read APS frames from *video_path* and return grayscale uint8 frames."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Cannot open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    start_frame = max(0, int(start_time * fps))
+    stop_frame = int(stop_time * fps)
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    frames_gray: list[np.ndarray] = []
+    idx = start_frame
+    while idx < stop_frame:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frames_gray.append(gray.astype(np.uint8))
+        idx += 1
+
+    cap.release()
+
+    if len(frames_gray) < 2:
+        raise ValueError(
+            f"Not enough frames in [{start_time}, {stop_time}] s window of {video_path}"
+        )
+
+    return frames_gray, fps
+
+
 def _load_frames_log(
     video_path: str | Path, stop_time: float, start_time: float = 0.0
 ) -> tuple[np.ndarray, float]:
@@ -85,34 +119,11 @@ def _load_frames_log(
     fps : float
         Source frame rate.
     """
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video: {video_path}")
-
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    start_frame = max(0, int(start_time * fps))
-    stop_frame = int(stop_time * fps)
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-    frames = []
-    idx = start_frame
-    while idx < stop_frame:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        frames.append(_lin_log_np(gray))
-        idx += 1
-
-    cap.release()
-
-    if len(frames) < 2:
-        raise ValueError(
-            f"Not enough frames in [{start_time}, {stop_time}] s window of {video_path}"
-        )
-
-    return np.stack(frames, axis=0), fps
+    frames_gray, fps = _load_frames_gray(
+        video_path, stop_time=stop_time, start_time=start_time
+    )
+    frames_log = np.stack([_lin_log_np(f.astype(np.float32)) for f in frames_gray], axis=0)
+    return frames_log, fps
 
 
 def _accumulate_diffs(frames_log: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -132,6 +143,87 @@ def _accumulate_diffs(frames_log: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def _predicted_count(diff_sum: np.ndarray, threshold: float) -> int:
     """Number of events predicted at a given threshold (floor division model)."""
     return int(np.floor(diff_sum / threshold).sum())
+
+
+def _events_to_numpy(events) -> np.ndarray:
+    if events is None:
+        return np.empty((0, 4), dtype=np.float32)
+    if hasattr(events, "detach"):
+        return events.detach().cpu().numpy()
+    return np.asarray(events)
+
+
+def _simulate_emulator_counts(
+    frames_gray: list[np.ndarray], fps: float, pos_thres: float, neg_thres: float
+) -> tuple[int, int]:
+    """Replay the real EventEmulator over the calibration window and count ON/OFF.
+
+    This is slower than the analytical proxy, but still cheap for a short window
+    and ensures the final thresholds match the actual simulator dynamics rather
+    than only the accumulated-difference approximation.
+    """
+    from v2ecore.emulator import EventEmulator
+
+    emu = EventEmulator(
+        pos_thres=pos_thres,
+        neg_thres=neg_thres,
+        sigma_thres=0.0,
+        cutoff_hz=0,
+        leak_rate_hz=0,
+        shot_noise_rate_hz=0,
+        device="cpu",
+    )
+
+    on_count = off_count = 0
+    for i, frame in enumerate(frames_gray):
+        t = i / fps
+        events = _events_to_numpy(emu.generate_events(frame, t))
+        if events.size == 0:
+            continue
+        on_count += int(np.sum(events[:, 3] > 0))
+        off_count += int(np.sum(events[:, 3] <= 0))
+
+    return on_count, off_count
+
+
+def _binary_search_emulator_threshold(
+    frames_gray: list[np.ndarray],
+    fps: float,
+    target: int,
+    polarity: str,
+    pos_thres: float,
+    neg_thres: float,
+) -> float:
+    """Binary-search a threshold against counts produced by the real emulator."""
+    lo, hi = _MIN_THRES, _MAX_THRES
+    cache: dict[float, int] = {}
+
+    def _count_at(th: float) -> int:
+        key = round(float(th), 6)
+        if key not in cache:
+            if polarity == "on":
+                cache[key], _ = _simulate_emulator_counts(frames_gray, fps, th, neg_thres)
+            else:
+                _, cache[key] = _simulate_emulator_counts(frames_gray, fps, pos_thres, th)
+        return cache[key]
+
+    count_lo = _count_at(lo)
+    count_hi = _count_at(hi)
+
+    if target >= count_lo:
+        return lo
+    if target <= count_hi:
+        return hi
+
+    for _ in range(14):
+        mid = (lo + hi) / 2.0
+        c = _count_at(mid)
+        if c > target:  # count too high -> raise threshold
+            lo = mid
+        else:  # count too low -> lower threshold
+            hi = mid
+
+    return (lo + hi) / 2.0
 
 
 def _binary_search_threshold(diff_sum: np.ndarray, target: int) -> float:
@@ -263,7 +355,10 @@ def calibrate_thresholds(
         stop_time,
     )
 
-    frames_log, fps = _load_frames_log(video_path, stop_time=stop_time, start_time=start_time)
+    frames_gray, fps = _load_frames_gray(
+        video_path, stop_time=stop_time, start_time=start_time
+    )
+    frames_log = np.stack([_lin_log_np(f.astype(np.float32)) for f in frames_gray], axis=0)
     n_frames = len(frames_log)
     logger.info("Loaded %d frames at %.2f fps", n_frames, fps)
 
@@ -287,14 +382,14 @@ def calibrate_thresholds(
             f"ON={real_on}, OFF={real_off}. Widen the window."
         )
 
+    # Stage 1: very fast analytical estimate for a good initial guess.
     pos_thres = _binary_search_threshold(pos_sum, real_on)
     neg_thres = _binary_search_threshold(neg_sum, real_off)
 
-    # Sanity: predicted counts at calibrated thresholds
     pred_on = _predicted_count(pos_sum, pos_thres)
     pred_off = _predicted_count(neg_sum, neg_thres)
     logger.info(
-        "Calibrated thresholds: pos_thres=%.4f (pred ON %d vs real %d, err %.1f%%)  "
+        "Analytical thresholds: pos_thres=%.4f (pred ON %d vs real %d, err %.1f%%)  "
         "neg_thres=%.4f (pred OFF %d vs real %d, err %.1f%%)",
         pos_thres,
         pred_on,
@@ -304,6 +399,40 @@ def calibrate_thresholds(
         pred_off,
         real_off,
         abs(pred_off - real_off) / max(real_off, 1) * 100,
+    )
+
+    # Stage 2: refine against the real EventEmulator so returned thresholds
+    # actually reproduce simulator counts on this window.
+    for _ in range(2):
+        pos_thres = _binary_search_emulator_threshold(
+            frames_gray,
+            fps,
+            target=real_on,
+            polarity="on",
+            pos_thres=pos_thres,
+            neg_thres=neg_thres,
+        )
+        neg_thres = _binary_search_emulator_threshold(
+            frames_gray,
+            fps,
+            target=real_off,
+            polarity="off",
+            pos_thres=pos_thres,
+            neg_thres=neg_thres,
+        )
+
+    sim_on, sim_off = _simulate_emulator_counts(frames_gray, fps, pos_thres, neg_thres)
+    logger.info(
+        "Calibrated thresholds: pos_thres=%.4f (emu ON %d vs real %d, err %.1f%%)  "
+        "neg_thres=%.4f (emu OFF %d vs real %d, err %.1f%%)",
+        pos_thres,
+        sim_on,
+        real_on,
+        abs(sim_on - real_on) / max(real_on, 1) * 100,
+        neg_thres,
+        sim_off,
+        real_off,
+        abs(sim_off - real_off) / max(real_off, 1) * 100,
     )
 
     return float(pos_thres), float(neg_thres)
