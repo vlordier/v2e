@@ -153,10 +153,72 @@ print(f'{fps:.4f}')
   touch "$DONE_MARKER"
 done
 
+# ── Calibrated runs (--calibrate_from auto-fits pos/neg thresholds per sequence) ─
+for SEQ in "${SEQUENCES[@]}"; do
+  SEQ_DIR="${FPV_ROOT}/${SEQ}"
+  DONE_CAL="${OUT_ROOT}/${SEQ}/.done_calibrated"
+  if [ -f "$DONE_CAL" ]; then
+    echo "--- ${SEQ}: calibrated already done, skipping ---"
+    continue
+  fi
+
+  REAL_EVENTS="${SEQ_DIR}/events.txt"
+  IN_VIDEO="${SEQ_DIR}/aps.avi"
+
+  echo ""
+  echo "======================================================================"
+  echo "=== $(date)  CALIBRATED: ${SEQ} ==="
+  echo "======================================================================"
+
+  # Calibrated Baseline: threshold fitted to real event count,  no realism extras
+  echo "[${SEQ}] === CALIBRATED BASELINE run ==="
+  python /root/v2e/v2e.py \
+    -i "$IN_VIDEO" \
+    -o "${OUT_ROOT}/${SEQ}/cal_baseline" \
+    --overwrite \
+    --no_preview \
+    --dvs346 \
+    --skip_video_output \
+    --dvs_text events.txt \
+    --stop_time "$STOP" \
+    --slomo_model "$CKPT" \
+    --calibrate_from "$REAL_EVENTS" \
+    --calibrate_stop_time "$STOP"
+
+  # Calibrated Experimental: fitted threshold + all realism controls
+  echo "[${SEQ}] === CALIBRATED EXPERIMENTAL run ==="
+  python /root/v2e/v2e.py \
+    -i "$IN_VIDEO" \
+    -o "${OUT_ROOT}/${SEQ}/cal_experimental" \
+    --overwrite \
+    --no_preview \
+    --dvs346 \
+    --skip_video_output \
+    --dvs_text events.txt \
+    --stop_time "$STOP" \
+    --slomo_model "$CKPT" \
+    --calibrate_from "$REAL_EVENTS" \
+    --calibrate_stop_time "$STOP" \
+    --refractory_mode soft \
+    --refractory_period 0.0003 \
+    --refractory_tau_s 0.00015 \
+    --threshold_adaptation_gain 0.1 \
+    --threshold_adaptation_tau_s 0.05 \
+    --hot_pixel_fraction 0.002 \
+    --hot_pixel_rate_hz 25 \
+    --bursty_pixel_fraction 0.001 \
+    --bursty_pixel_rate_hz 10 \
+    --row_noise_rate_hz 0.2 \
+    --scene_cut_policy reset \
+    --scene_cut_threshold 0.3
+
+  touch "$DONE_CAL"
+done
+
 # ── Aggregate comparison across all sequences ──────────────────────────────────
 echo ""
 echo "======================================================================"
-echo "=== AGGREGATE COMPARISON: synthesised vs real DAVIS events ==="
+echo "=== AGGREGATE COMPARISON: synthesised vs real DAVIS events (4 conditions) ==="
 echo "======================================================================"
 python3 - <<'PYEOF'
 import sys
@@ -174,8 +236,16 @@ SEQUENCES = [
     "outdoor_forward_3",
 ]
 
+# Each entry: (output subdir name, short display label)
+CONDITIONS = [
+    ("baseline",         "Base"),
+    ("experimental",     "Exp"),
+    ("cal_baseline",     "CalBase"),
+    ("cal_experimental", "CalExp"),
+]
+
+
 def load_events(path, t_offset=0.0, t_max=None):
-    """Return (n_on, n_off) for events up to t_max seconds."""
     on = off = 0
     try:
         with open(path) as f:
@@ -197,20 +267,14 @@ def load_events(path, t_offset=0.0, t_max=None):
         pass
     return on, off
 
+
 rows = []
 for seq in SEQUENCES:
     real_path = FPV_ROOT / seq / "events.txt"
-    b_path    = OUT_ROOT / seq / "baseline"    / "events.txt"
-    e_path    = OUT_ROOT / seq / "experimental"/ "events.txt"
-
     if not real_path.exists():
         print(f"  {seq}: real events not found, skipping")
         continue
-    if not b_path.exists() or not e_path.exists():
-        print(f"  {seq}: v2e output not found (may not have run yet)")
-        continue
 
-    # find t0 for real events (epoch timestamps)
     t0 = None
     with open(real_path) as f:
         for line in f:
@@ -219,61 +283,86 @@ for seq in SEQUENCES:
                 break
 
     r_on, r_off = load_events(real_path, t_offset=t0, t_max=STOP)
-    b_on, b_off = load_events(b_path,    t_max=STOP)
-    e_on, e_off = load_events(e_path,    t_max=STOP)
-
     r_n = r_on + r_off
-    b_n = b_on + b_off
-    e_n = e_on + e_off
-
     r_ratio = r_on / r_off if r_off else float('inf')
-    b_ratio = b_on / b_off if b_off else float('inf')
-    e_ratio = e_on / e_off if e_off else float('inf')
 
-    b_cnt_pct = (b_n - r_n) / r_n * 100 if r_n else float('inf')
-    e_cnt_pct = (e_n - r_n) / r_n * 100 if r_n else float('inf')
+    cond_results = {}
+    for cond_dir, cond_label in CONDITIONS:
+        p = OUT_ROOT / seq / cond_dir / "events.txt"
+        c_on, c_off = load_events(p, t_max=STOP)
+        c_n = c_on + c_off
+        c_ratio = c_on / c_off if c_off else float('inf')
+        cnt_pct = (c_n - r_n) / r_n * 100 if r_n else float('inf')
+        ratio_d = c_ratio - r_ratio
+        cond_results[cond_label] = (c_n, cnt_pct, c_ratio, ratio_d)
 
-    b_ratio_d = b_ratio - r_ratio
-    e_ratio_d = e_ratio - r_ratio
-
-    winner = "EXP" if abs(e_ratio_d) < abs(b_ratio_d) else "BASE"
-
-    rows.append((seq, r_n, r_ratio, b_n, b_cnt_pct, b_ratio, b_ratio_d,
-                          e_n, e_cnt_pct, e_ratio, e_ratio_d, winner))
+    rows.append((seq, r_n, r_ratio, cond_results))
 
 if not rows:
     print("No results available yet.")
     sys.exit(0)
 
-# ── Per-sequence table ──────────────────────────────────────────────────────
-hdr = f"{'Sequence':<22}  {'Real N':>8}  {'Real R':>6}  {'Base N':>9}  {'Cnt%':>6}  {'B R':>6}  {'ΔR':>6}  {'Exp N':>9}  {'Cnt%':>6}  {'E R':>6}  {'ΔR':>6}  {'Winner'}"
-print(hdr)
-print("-" * len(hdr))
-for (seq, r_n, r_ratio, b_n, b_cnt_pct, b_ratio, b_ratio_d,
-          e_n, e_cnt_pct, e_ratio, e_ratio_d, winner) in rows:
-    print(f"{seq:<22}  {r_n:>8,}  {r_ratio:>6.3f}"
-          f"  {b_n:>9,}  {b_cnt_pct:>+6.1f}%  {b_ratio:>6.3f}  {b_ratio_d:>+6.3f}"
-          f"  {e_n:>9,}  {e_cnt_pct:>+6.1f}%  {e_ratio:>6.3f}  {e_ratio_d:>+6.3f}"
-          f"  {winner}")
+all_labels  = [lb for _, lb in CONDITIONS]
+present_labels = [lb for lb in all_labels
+                  if any(lb in r[3] and r[3][lb][0] > 0 for r in rows)]
 
-# ── Summary ─────────────────────────────────────────────────────────────────
-exp_wins = sum(1 for r in rows if r[-1] == "EXP")
-base_wins = len(rows) - exp_wins
+# ── Per-condition summary tables ─────────────────────────────────────────────
+for label in present_labels:
+    print(f"\n{'='*72}")
+    print(f"  Condition: {label}")
+    print(f"{'='*72}")
+    hdr = f"  {'Sequence':<22}  {'Real N':>9}  {'Real R':>6}  {'Synth N':>9}  {'Cnt%':>7}  {'Synth R':>7}  {'ΔR':>6}"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+    for (seq, r_n, r_ratio, cond_results) in rows:
+        if label not in cond_results or cond_results[label][0] == 0:
+            print(f"  {seq:<22}  {'(not run)':>9}")
+            continue
+        c_n, cnt_pct, c_ratio, ratio_d = cond_results[label]
+        print(f"  {seq:<22}  {r_n:>9,}  {r_ratio:>6.3f}"
+              f"  {c_n:>9,}  {cnt_pct:>+7.1f}%  {c_ratio:>7.3f}  {ratio_d:>+6.3f}")
+
+# ── Head-to-head ON/OFF winner table ──────────────────────────────────────────
+print(f"\n{'='*72}")
+print("  ON/OFF ratio winners per sequence (lowest |ΔR| wins)")
+print(f"{'='*72}")
+print(f"  {'Sequence':<22}", end="")
+for lb in present_labels:
+    print(f"  {lb:>10}", end="")
+print("  Winner")
+print("  " + "-" * (24 + 12 * len(present_labels)))
+winners = {lb: 0 for lb in present_labels}
+for (seq, r_n, r_ratio, cond_results) in rows:
+    avail = {lb: cond_results[lb][3] for lb in present_labels
+             if lb in cond_results and cond_results[lb][0] > 0}
+    if not avail:
+        continue
+    best_lb = min(avail, key=lambda lb: abs(avail[lb]))
+    winners[best_lb] += 1
+    print(f"  {seq:<22}", end="")
+    for lb in present_labels:
+        if lb in avail:
+            marker = "***" if lb == best_lb else "   "
+            print(f"  {avail[lb]:>+7.3f}{marker}", end="")
+        else:
+            print(f"  {'--':>10}", end="")
+    print(f"  {best_lb}")
+
 print()
-print(f"ON/OFF ratio closer to real sensor:  Experimental {exp_wins}/{len(rows)}"
-      f"  vs  Baseline {base_wins}/{len(rows)}")
+for lb in present_labels:
+    print(f"  {lb}: wins ON/OFF fidelity in {winners[lb]}/{len(rows)} sequences")
 
-avg_b_delta = sum(abs(r[6]) for r in rows) / len(rows)
-avg_e_delta = sum(abs(r[10]) for r in rows) / len(rows)
-print(f"Mean |ΔON/OFF|:  Baseline {avg_b_delta:.4f}  Experimental {avg_e_delta:.4f}")
-if avg_e_delta < avg_b_delta:
-    print("==> Experimental realism controls IMPROVE ON/OFF fidelity on average.")
-else:
-    print("==> Baseline ON/OFF fidelity is better or equal on average.")
+# ── Count-error summary ────────────────────────────────────────────────────────
+print()
+print("  Mean event count delta vs real:")
+for lb in present_labels:
+    cnts = [r[3][lb][1] for r in rows if lb in r[3] and r[3][lb][0] > 0]
+    if cnts:
+        mean_cnt = sum(cnts) / len(cnts)
+        print(f"    {lb:<16}: {mean_cnt:>+7.1f}%")
 
-avg_b_cnt = sum(r[4] for r in rows) / len(rows)
-avg_e_cnt = sum(r[8] for r in rows) / len(rows)
-print(f"Mean count delta vs real:  Baseline {avg_b_cnt:+.1f}%  Experimental {avg_e_cnt:+.1f}%")
+print()
+print("==> Calibrated conditions (CalBase/CalExp) should have dramatically lower count error.")
 PYEOF
 
 echo ""
