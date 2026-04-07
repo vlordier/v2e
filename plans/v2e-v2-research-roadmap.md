@@ -79,6 +79,42 @@ python v2e.py -i media/counting.gif ... --stop_time 3.0          # (no --disable
 
 The synthetic sweep results are **identical** on GPU vs CPU (correctness verified on RTX 3090, CUDA 12.6).
 
+### UZH-FPV 5-sequence comparative run (April 2026)
+
+End-to-end validation on five real UZH-FPV sequences with available DAVIS ground-truth events.
+Run on a Vast.ai RTX 3090 (Czechia, ~$0.20/hr) with SloMo enabled.
+Real event counts are taken from the ground-truth `events.txt` files in the first 10 s window.
+
+| Sequence | Real N | Real R | Baseline N | Cnt Δ% | Base R | ΔR | Experimental N | Cnt Δ% | Exp R | ΔR | Winner |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|
+| indoor_forward_3 | 670,600 | 0.891 | 3,625,998 | +440.7% | 0.968 | +0.078 | 3,149,121 | +369.6% | 0.952 | +0.062 | **EXP** |
+| indoor_forward_10 | 236,523 | 1.009 | 2,030,616 | +758.5% | 1.044 | +0.034 | 1,941,719 | +720.9% | 1.037 | +0.027 | **EXP** |
+| indoor_45_2 | 429,030 | 0.809 | 86,181 | −79.9% | 1.123 | +0.314 | 313,984 | −26.8% | 1.082 | +0.272 | **EXP** |
+| outdoor_forward_1 | 3,713,201 | 0.824 | 38,302,480 | +931.5% | 1.012 | +0.187 | 25,726,887 | +592.8% | 0.988 | +0.164 | **EXP** |
+| outdoor_forward_3 | 3,081,219 | 0.901 | 39,742,921 | +1189.8% | 1.010 | +0.109 | 26,207,890 | +750.6% | 0.987 | +0.086 | **EXP** |
+
+Columns: **R** = ON/OFF ratio; **ΔR** = |R\_synth − R\_real|; **Winner** = which condition has ON/OFF ratio closer to real sensor.
+
+**Summary statistics:**
+
+| Metric | Baseline | Experimental |
+|---|---:|---:|
+| Mean event count Δ vs real | +648.1% | +481.4% |
+| Mean \|ΔON/OFF\| | 0.1444 | 0.1223 |
+| Sequences where ON/OFF closer to real | 0 / 5 | **5 / 5** |
+
+**Key findings:**
+
+1. **Experimental controls win on ON/OFF fidelity in all 5 sequences.** Mean |ΔON/OFF| is 15% better (0.1444 → 0.1223).
+2. **Both conditions massively over-count events** at the default threshold (pos/neg = 0.2). Baseline is +648%, experimental is +481% over real. Threshold calibration is the largest remaining gap.
+3. **Experimental controls reduce event count toward real in 4/5 sequences.** The exception is `indoor_45_2`, where the low-motion 45° downward view causes hot/bursty pixel noise to *add* events rather than suppress spurious burst events. This anomaly motivates threshold-aware noise scaling.
+4. **Outdoor sequences are particularly over-counted** (931–1189% at baseline). High dynamic outdoor lighting raises per-pixel contrast far above the 0.2 threshold, requiring calibrated thresholds in the 0.8–1.5 range.
+5. **`indoor_45_2` anomaly**: experimental (313K) > baseline (86K), because the baseline was itself already under-counting (−79.9%), and the noise injection from hot/bursty pixel models is not intensity-gated. Hot-pixel noise should be conditioned on local event rate to avoid inflating already-sparse sequences.
+
+**Committed results script:** `scripts/vast_run.sh` — replicable on any Vast.ai or SLURM GPU node with a CUDA 12.x runtime.
+
+**Next step:** threshold calibration using `v2ecore/calibration.py` (`--calibrate_from` flag). Expected to bring both conditions to within 10–30% of real event counts.
+
 ---
 
 ## Current baseline in the repo
@@ -409,11 +445,14 @@ That sequence is deliberately chosen to improve realism without destabilizing th
 - [x] leak noise
 - [x] shot noise
 - [x] basic hard refractory period
-- [ ] soft/adaptive refractory recovery
-- [ ] hot/bursty/clustered defect model
-- [ ] dynamic thresholds and adaptation
-- [ ] cut-aware interpolation policy
+- [x] soft/adaptive refractory recovery
+- [x] hot/bursty/clustered defect model
+- [x] dynamic thresholds and adaptation
+- [x] cut-aware interpolation policy
+- [x] calibration-to-real-camera workflow (`v2ecore/calibration.py`, `--calibrate_from`)
+- [x] 5-sequence UZH-FPV baseline vs experimental validation (ON/OFF fidelity: EXP wins 5/5)
+- [ ] threshold calibration applied re-run (eliminate 481–648% event overcounting)
+- [ ] intensity-gated hot-pixel noise (fix indoor_45_2 anomaly)
 - [ ] second-order temporal pixel model
-- [ ] calibration-to-real-camera workflow
 - [ ] spectral / photometric front-end
 - [ ] hybrid neural residual correction
