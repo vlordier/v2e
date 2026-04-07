@@ -18,3 +18,4 @@ dabbb83	0.000200	1.0	discard	Best batch-size configuration with stronger AdamW r
 a34bb17	0.587700	0.0	keep	restore LR=1e-3 with batch=4
 cf0102b	0.581800	0.0	discard	focal alpha 0.85 on LR=1e-3 baseline
 8ea94be	0.582100	0.0	discard	additive IMU fusion on LR=1e-3 baseline
+14b1d6f	0.579800	0.0	discard	warmup 5 0x0p+0nd warmdown 500n LR=1e-3 baseline
