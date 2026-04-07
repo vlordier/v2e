@@ -3,7 +3,7 @@
 # Compares synthesised events from APS frames against the real DAVIS events.
 #
 # Dataset:  http://rpg.ifi.uzh.ch/datasets/uzh-fpv-newer-versions/v3/
-# Sequences: indoor_forward_3, indoor_forward_10, indoor_45_1,
+# Sequences: indoor_forward_3, indoor_forward_10, indoor_45_2,
 #            outdoor_forward_1, outdoor_forward_3
 set -euo pipefail
 LOG=/root/v2e_run.log
@@ -44,7 +44,7 @@ fi
 SEQUENCES=(
   indoor_forward_3
   indoor_forward_10
-  indoor_45_1
+  indoor_45_2
   outdoor_forward_1
   outdoor_forward_3
 )
