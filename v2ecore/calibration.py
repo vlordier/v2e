@@ -32,6 +32,7 @@ Author: GitHub Copilot (v2e upgrades branch)
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 import cv2
@@ -41,13 +42,35 @@ logger = logging.getLogger(__name__)
 
 # ── constants ────────────────────────────────────────────────────────────────
 
-_EPS = 1e-6  # added to linear intensity before log to avoid log(0)
-_LOG_SCALE = 1.0  # log-base-e; matches emulator convention
+# Piecewise lin-log constants — must match emulator_utils.lin_log(threshold=20).
+# Below LIN_LOG_THRESHOLD: linear (  y = x * log(T)/T  )
+# Above LIN_LOG_THRESHOLD: pure log ( y = log(x) )
+# This avoids the -∞ singularity that np.log(0+tiny_eps) would produce and
+# ensures calibration differences are numerically identical to the emulator.
+_LIN_LOG_THRESHOLD = 20.0
+_LIN_LOG_F = math.log(_LIN_LOG_THRESHOLD) / _LIN_LOG_THRESHOLD  # ≈ 0.1498
+
 _MIN_THRES = 0.01  # minimum allowed threshold (log_e units)
-_MAX_THRES = 2.0  # maximum allowed threshold
+_MAX_THRES = 2.0   # maximum allowed threshold
 
 
 # ── private helpers ──────────────────────────────────────────────────────────
+
+
+def _lin_log_np(gray: np.ndarray) -> np.ndarray:
+    """Piecewise linear-log matching emulator_utils.lin_log(threshold=20).
+
+    Below _LIN_LOG_THRESHOLD: linear ramp  y = x * log(T)/T
+    Above _LIN_LOG_THRESHOLD: natural log  y = log(x)
+
+    This is numerically identical to what the emulator accumulates, so
+    calibrated thresholds transfer directly to the production run.
+    """
+    return np.where(
+        gray <= _LIN_LOG_THRESHOLD,
+        gray * _LIN_LOG_F,
+        np.log(np.maximum(gray, _LIN_LOG_THRESHOLD)),
+    ).astype(np.float32)
 
 
 def _load_frames_log(
@@ -58,7 +81,7 @@ def _load_frames_log(
     Returns
     -------
     frames_log : ndarray, shape (N, H, W), float32
-        Per-frame log(I+eps) values.
+        Per-frame lin_log(I) values (matches emulator encoding).
     fps : float
         Source frame rate.
     """
@@ -79,7 +102,7 @@ def _load_frames_log(
         if not ok:
             break
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        frames.append(np.log(gray + _EPS))
+        frames.append(_lin_log_np(gray))
         idx += 1
 
     cap.release()
