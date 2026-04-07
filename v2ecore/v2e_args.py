@@ -188,6 +188,23 @@ def v2e_args(parser):
         default=0.03,
         help="1-std deviation threshold variation in log_e intensity change.",
     )
+    modelGroup.add_argument(
+        "--calibrate_from",
+        type=str,
+        default=None,
+        metavar="EVENTS_TXT",
+        help="Path to a real DVS events text file (t x y p). When set, v2e will analytically "
+        "calibrate pos_thres and neg_thres against this recording before running, overriding "
+        "any manually specified threshold values. Requires the APS input video to be given "
+        "via --input. See v2ecore/calibration.py for details.",
+    )
+    modelGroup.add_argument(
+        "--calibrate_stop_time",
+        type=float,
+        default=10.0,
+        help="Duration in seconds of the calibration window (default 10 s). "
+        "Used only when --calibrate_from is set.",
+    )
 
     modelGroup.add_argument(
         "--cutoff_hz",

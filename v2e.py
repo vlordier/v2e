@@ -313,6 +313,27 @@ def main():
     pos_thres = args.pos_thres
     neg_thres = args.neg_thres
     sigma_thres = args.sigma_thres
+
+    # Optional: calibrate thresholds analytically from a real events file
+    if getattr(args, "calibrate_from", None) is not None:
+        from v2ecore.calibration import calibrate_thresholds
+
+        cal_stop = getattr(args, "calibrate_stop_time", 10.0)
+        logger.info(
+            "Calibrating thresholds from '%s' (window 0–%.1f s)…",
+            args.calibrate_from,
+            cal_stop,
+        )
+        pos_thres, neg_thres = calibrate_thresholds(
+            video_path=args.input,
+            real_events_path=args.calibrate_from,
+            stop_time=cal_stop,
+        )
+        logger.info(
+            "Calibrated: pos_thres=%.4f  neg_thres=%.4f  (overrides --pos_thres / --neg_thres)",
+            pos_thres,
+            neg_thres,
+        )
     record_single_pixel_states = args.record_single_pixel_states
 
     # Cutoff and noise frequencies
