@@ -169,7 +169,7 @@ STOP     = 10.0
 SEQUENCES = [
     "indoor_forward_3",
     "indoor_forward_10",
-    "indoor_45_1",
+    "indoor_45_2",
     "outdoor_forward_1",
     "outdoor_forward_3",
 ]
