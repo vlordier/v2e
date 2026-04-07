@@ -20,3 +20,4 @@ cf0102b	0.581800	0.0	discard	focal alpha 0.85 on LR=1e-3 baseline
 8ea94be	0.582100	0.0	discard	additive IMU fusion on LR=1e-3 baseline
 14b1d6f	0.579800	0.0	discard	warmup 5 0x0p+0nd warmdown 500n LR=1e-3 baseline
 ed44514	0.580800	0.0	discard	scale-only FiLM on LR=1e-3 baseline
+9770610	0.581100	0.0	discard	weight decay 1e-5 on LR=1e-3 baseline
