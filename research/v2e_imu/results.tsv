@@ -25,3 +25,4 @@ ed44514	0.580800	0.0	discard	scale-only FiLM on LR=1e-3 baseline
 04cdfa9	0.566100	0.0	discard	UNet depth 2 on LR=1e-3 baseline
 c2d511e	0.583700	0.0	discard	learning rate 8e-4 on batch=4 FiLM baseline
 c35d98d	0.588900	0.0	keep	learning rate 1.2e-3 on batch=4 FiLM baseline
+09ada53	0.574800	0.0	discard	learning rate 1.4e-3 on batch=4 FiLM baseline

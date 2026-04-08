@@ -57,6 +57,15 @@ The script warns if running on CPU; if you see "WARNING: No GPU available", you'
 
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 event_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 event_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
 
+**Search strategy: prefer breadth-first exploration.** Do **not** get stuck doing deep local tuning on one idea family for many runs in a row. Instead:
+- Try a broad range of promising ideas first (LR/schedule, regularization, fusion type, width/depth, IMU encoder, loss weighting, etc.).
+- Give each option **1 run**, or **2 runs max** if the first result is promising / ambiguous and deserves a quick follow-up nearby.
+- After those 1–2 runs, **switch to a different category** and try something new.
+- Avoid spending more than **two consecutive experiments** on the same knob unless it just produced a new keep and you are mapping its immediate neighborhood.
+- If an idea clearly loses, discard it and move on immediately rather than trying to rescue it for many iterations.
+
+This means the search should look like: try a couple of learning-rate variants, then a fusion variant, then a width/depth tweak, then a loss tweak, then circle back only after sampling the wider space.
+
 **The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
 
 ## Output format
@@ -120,7 +129,7 @@ The experiment runs on a dedicated branch (e.g., `research/mar30`).
 LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
+2. Tune `train.py` with a **breadth-first** experimental idea by directly hacking the code. Prefer a new category after 1–2 runs on the current option family.
 3. `git add research/v2e_imu/train.py && git commit -m "experiment: "` (never `git add -A` — this may be inside a larger repo)
 4. Run the experiment: `python train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
 5. Read out the results: `grep "^val_ap:\|^peak_vram_mb:" run.log`
