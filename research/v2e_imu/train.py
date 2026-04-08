@@ -77,7 +77,7 @@ class IMUEncoder(nn.Module):  # type: ignore[misc]
     instantaneous motion.
     """
 
-    def __init__(self, input_dim: int = 6, hidden_dim: int = 128, num_layers: int = 1) -> None:
+    def __init__(self, input_dim: int = 6, hidden_dim: int = 128, num_layers: int = 2) -> None:
         super().__init__()
         self.lstm = nn.LSTM(
             input_dim, hidden_dim, num_layers=num_layers, batch_first=True, bidirectional=True
@@ -304,7 +304,7 @@ BASE_CHANNELS = 32
 IMU_HIDDEN_DIM = 128
 FUSION_TYPE = "film"  # film | gated | additive | none
 MODEL_FAMILY = "balanced"  # light | balanced | heavy
-UNET_DEPTH = 3
+UNET_DEPTH = 4
 
 # FNO hyperparameters (only used when MODEL_TYPE="fno")
 FNO_MODES = 8  # Fourier modes per spatial dim
