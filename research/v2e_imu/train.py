@@ -77,7 +77,7 @@ class IMUEncoder(nn.Module):  # type: ignore[misc]
     instantaneous motion.
     """
 
-    def __init__(self, input_dim: int = 6, hidden_dim: int = 128, num_layers: int = 2) -> None:
+    def __init__(self, input_dim: int = 6, hidden_dim: int = 128, num_layers: int = 1) -> None:
         super().__init__()
         self.lstm = nn.LSTM(
             input_dim, hidden_dim, num_layers=num_layers, batch_first=True, bidirectional=True
@@ -314,7 +314,7 @@ FNO_CHANNELS = 128  # Feature channels in FNO trunk
 # Training
 TOTAL_BATCH_SIZE = 4
 DEVICE_BATCH_SIZE = 4
-LEARNING_RATE = 1.4e-3
+LEARNING_RATE = 1.2e-3
 WEIGHT_DECAY = 0.0
 WARMUP_RATIO = 0.1
 WARMDOWN_RATIO = 0.3
