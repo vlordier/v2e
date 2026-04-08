@@ -304,7 +304,7 @@ BASE_CHANNELS = 32
 IMU_HIDDEN_DIM = 128
 FUSION_TYPE = "film"  # film | gated | additive | none
 MODEL_FAMILY = "balanced"  # light | balanced | heavy
-UNET_DEPTH = 4
+UNET_DEPTH = 3
 
 # FNO hyperparameters (only used when MODEL_TYPE="fno")
 FNO_MODES = 8  # Fourier modes per spatial dim
@@ -319,6 +319,7 @@ WEIGHT_DECAY = 0.0
 WARMUP_RATIO = 0.1
 WARMDOWN_RATIO = 0.3
 FINAL_LR_FRAC = 0.01
+RATE_REG_WEIGHT = 0.005
 
 # Evaluation
 FINAL_EVAL_BATCH_SIZE = 16
@@ -601,7 +602,7 @@ def _accumulate_step(
     per_ch_mean = pred_for_loss.mean(dim=(0, 2, 3))  # (2,) mean over B, H, W
     rate_reg = F.mse_loss(per_ch_mean, rate_target.to(dtype=per_ch_mean.dtype)) / grad_accum_steps
 
-    loss = event_loss + 0.01 * rate_reg
+    loss = event_loss + RATE_REG_WEIGHT * rate_reg
     if not _all_finite_tensors(event_loss, rate_reg, loss):
         return None
 
