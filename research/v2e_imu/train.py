@@ -303,7 +303,7 @@ MODEL_TYPE = "unet"
 BASE_CHANNELS = 32
 IMU_HIDDEN_DIM = 128
 FUSION_TYPE = "film"  # film | gated | additive | none
-MODEL_FAMILY = "balanced"  # light | balanced | heavy
+MODEL_FAMILY = "light"  # light | balanced | heavy
 UNET_DEPTH = 3
 
 # FNO hyperparameters (only used when MODEL_TYPE="fno")
@@ -319,7 +319,7 @@ WEIGHT_DECAY = 0.0
 WARMUP_RATIO = 0.1
 WARMDOWN_RATIO = 0.3
 FINAL_LR_FRAC = 0.01
-RATE_REG_WEIGHT = 0.005
+RATE_REG_WEIGHT = 0.01
 
 # Evaluation
 FINAL_EVAL_BATCH_SIZE = 16
