@@ -30,3 +30,4 @@ c35d98d	0.588900	0.0	keep	learning rate 1.2e-3 on batch=4 FiLM baseline
 174f7e0	0.581200	0.0	discard	deepen UNet to depth 4 on LR=1.2e-3 baseline
 9ec56e6	0.580900	0.0	discard	halve rate regularization to 0.005 on LR=1.2e-3 baseline
 053f924	0.581600	0.0	discard	switch to light model family on LR=1.2e-3 baseline
+cc6fb69	0.579000	0.0	discard	switch to heavy model family on LR=1.2e-3 baseline

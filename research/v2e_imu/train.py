@@ -303,7 +303,7 @@ MODEL_TYPE = "unet"
 BASE_CHANNELS = 32
 IMU_HIDDEN_DIM = 128
 FUSION_TYPE = "film"  # film | gated | additive | none
-MODEL_FAMILY = "heavy"  # light | balanced | heavy
+MODEL_FAMILY = "balanced"  # light | balanced | heavy
 UNET_DEPTH = 3
 
 # FNO hyperparameters (only used when MODEL_TYPE="fno")
