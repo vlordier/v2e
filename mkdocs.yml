@@ -1,0 +1,24 @@
+site_name: v2e
+site_description: Synthetic DVS events from video
+site_url: https://github.com/anomalyco/v2e
+
+theme:
+  name: material
+
+nav:
+  - Home: index.md
+  - Usage: usage.md
+  - API: api.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            members_order: source
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences

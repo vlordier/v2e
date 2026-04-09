@@ -4,6 +4,10 @@
 data/
 notebook/
 *.sh
+!scripts/vastai_bootstrap.sh
+!scripts/vastai_launch_example.sh
+!scripts/lint_shell.sh
+!scripts/vast_run.sh
 aedat-text-test.txt
 input/*
 
@@ -147,3 +151,29 @@ dmypy.json
 cython_debug/
 
 *.ckpt
+*.pt
+
+# Optuna / research artifacts
+optuna_small_study.db
+optuna_small_summary.json
+
+# Research datasets
+*.bag
+*.hdf5
+*.h5
+*.aedat
+*.aedat4
+*.dat
+*.zip
+research/v2e_imu/data/
+research/v2e_imu/datasets/
+research/v2e_imu/checkpoints/
+research/v2e_imu/test_checkpoints/
+research/v2e_imu/download.log
+
+# Remote autoresearch / MLflow artifacts
+mlruns/
+research/v2e_imu/mlruns/
+logs/
+autoresearch.out
+.env.vastai.local

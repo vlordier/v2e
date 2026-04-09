@@ -1,0 +1,108 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "v2e"
+version = "2.2.0"
+description = "Generates synthetic DVS events from conventional video"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "Tobi Delbruck", email = "tobi@ini.uzh.ch"},
+  {name = "Yuhuang Hu", email = "yuhuang.hu@ini.uzh.ch"},
+  {name = "Zhe He", email = "zhehe@ini.uzh.ch"},
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Natural Language :: English",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Utilities",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "numpy>=2.0",
+  "argcomplete",
+  "engineering-notation",
+  "tqdm",
+  "opencv-python",
+  "h5py>=3.10",
+  "pandas>=2.0",
+  "Pillow>=10.0",
+  "PyYAML>=6.0",
+  "scipy>=1.11",
+  "torch>=2.0",
+  "torchvision>=0.15",
+  "numba>=0.60",
+  "matplotlib>=3.7",
+  "timm>=1.0.26",
+  "plyer",
+  "screeninfo",
+  "easygui",
+  "scikit-image>=0.21",
+]
+
+[project.scripts]
+v2e = "v2e:main"
+ddd_extract_data = "dataset_scripts.ddd.ddd_extract_data:main"
+
+[project.optional-dependencies]
+aedat4 = [
+  "dv-processing",
+]
+dev = [
+  "ruff>=0.5.0",
+  "mypy",
+  "pytest",
+  "pytest-cov",
+  "pre-commit",
+  "types-numpy",
+  "types-Pillow",
+  "shellcheck-py",
+]
+mlops = [
+  "awscli>=1.36",
+  "boto3>=1.34",
+  "mlflow>=2.20",
+  "optuna>=3.6",
+  "vastai",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "Q", "C901", "PLR0912", "PLR0914", "PLR0915"]
+ignore = ["S101", "S108", "S301", "E501"]
+per-file-ignores = {"dataset_scripts/**" = ["E501", "UP031", "E711", "E712", "E402", "S101", "B007", "S311"], "scripts/**" = ["E501", "F403", "F405", "F841", "B007"], "test/**" = ["S101", "S108"]}
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["cv2.*", "torch.*", "numba.*", "plyer.*", "screeninfo.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=v2ecore --cov-report=html --cov-report=term-missing"
+
+[tool.hatch.version]
+source = "vcs"

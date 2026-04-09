@@ -1,10 +1,8 @@
-import numpy as np
+import atexit
 import logging
 
-import torch
+import numpy as np
 from engineering_notation import EngNumber  # only from pip
-import atexit
-import struct
 
 from v2ecore.v2e_utils import v2e_quit
 
@@ -77,20 +75,20 @@ class AEDat2Output:
             self.flipy = True  # v2e uses computer vision matrix printing convention of UL pixel being 0,0, but jAER uses original graphics and graphing convention that 0,0 is LL
             self.flipx = True # not 100% sure why this is needed. Observed for tennis example
         else:
-            err_string=f'AEDAT-2.0 output width={output_width} height={output_height} not supported; add your camera to {__name__} or use one of the predefined DVS cameras, e.g. --dvs346 or --dvs240 that have sizes self.SUPPORTED_SIZES={self.SUPPORTED_SIZES}'
+            err_string=f"AEDAT-2.0 output width={output_width} height={output_height} not supported; add your camera to {__name__} or use one of the predefined DVS cameras, e.g. --dvs346 or --dvs240 that have sizes self.SUPPORTED_SIZES={self.SUPPORTED_SIZES}"
             raise ValueError(err_string)
 
         self.numEventsWritten = 0
         self.numOnEvents=0
         self.numOffEvents=0
-        logging.info('opening AEDAT-2.0 output file {} in binary mode'.format(filepath))
+        logging.info(f"opening AEDAT-2.0 output file {filepath} in binary mode")
         try:
-            self.file = open(filepath, 'wb')
+            self.file = open(filepath, "wb")
             self._writeHeader()
             atexit.register(self.cleanup)
-            logger.info('opened {} for DVS output data for jAER'.format(filepath))
+            logger.info(f"opened {filepath} for DVS output data for jAER")
         except OSError as err:
-            logger.error('caught {}:\n  could not open {} for writing; maybe jAER has it open?'.format(err,filepath))
+            logger.error(f"caught {err}:\n  could not open {filepath} for writing; maybe jAER has it open?")
             v2e_quit(1)
 
     def cleanup(self):
@@ -98,36 +96,33 @@ class AEDat2Output:
 
     def close(self):
         if self.file:
-            logger.info("Closing {} after writing {} events ({} on, {} off)".
-                        format(self.filepath,
-                               EngNumber(self.numEventsWritten),
-                               EngNumber(self.numOnEvents),
-                               EngNumber(self.numOffEvents),
-                               ))
+            logger.info(f"Closing {self.filepath} after writing {EngNumber(self.numEventsWritten)} events ({EngNumber(self.numOnEvents)} on, {EngNumber(self.numOffEvents)} off)")
             self.file.close()
             self.file = None
 
     def _writeHeader(self):
-        import datetime, time, getpass
+        import datetime
+        import getpass
+        import time
         # CRLF \r\n is needed to not break header parsing in jAER
-        date = datetime.datetime.now().strftime('# Creation time: %I:%M%p %B %d %Y\r\n')  # Tue Jan 26 13:57:06 CET 2016
-        time = '# Creation time: System.currentTimeMillis() {}\r\n'.format(int(time.time() * 1000.))
-        user = '# User name: {}\r\n'.format(getpass.getuser())
+        date = datetime.datetime.now().strftime("# Creation time: %I:%M%p %B %d %Y\r\n")  # Tue Jan 26 13:57:06 CET 2016
+        time = f"# Creation time: System.currentTimeMillis() {int(time.time() * 1000.)}\r\n"
+        user = f"# User name: {getpass.getuser()}\r\n"
         if self.label_signal_noise:
-            sn_comment='# noise events are labeled as addressed external input events when the --label_signal_noise option is selected for output\r\n'
+            sn_comment="# noise events are labeled as addressed external input events when the --label_signal_noise option is selected for output\r\n"
         else:
-            sn_comment=''
+            sn_comment=""
         # IMPORTANT, use \r\n to terminate lines!!!! otherwise the whole file will be corrupted
-        header = ('#!AER-DAT2.0\r\n',
-                  '# This is a raw AE data file created by AEDat2Output in v2e (see https://github.com/SensorsINI/v2e) as specified at https://inivation.com/support/software/fileformat/#aedat-20\r\n',
-                  '# Data format is int32 address, int32 timestamp (8 bytes total), repeated for each event\r\n',
-                  '# Timestamps tick is 1 us\r\n',
+        header = ("#!AER-DAT2.0\r\n",
+                  "# This is a raw AE data file created by AEDat2Output in v2e (see https://github.com/SensorsINI/v2e) as specified at https://inivation.com/support/software/fileformat/#aedat-20\r\n",
+                  "# Data format is int32 address, int32 timestamp (8 bytes total), repeated for each event\r\n",
+                  "# Timestamps tick is 1 us\r\n",
                   sn_comment,
                   date, time,
                   user,
                   )
         for s in header:
-            bytes = s.encode('UTF-8')
+            bytes = s.encode("UTF-8")
             self.file.write(bytes)
 
     def appendEvents(self, events: np.ndarray, signnoise_label:np.ndarray=None ):
@@ -154,7 +149,7 @@ class AEDat2Output:
         n = events.shape[0]
         t = (1e6 * events[:, 0]).astype(np.int32)   # to us from seconds
         if np.any(np.diff(t)<0):
-            logger.warning('nonmonontoic timestamp')
+            logger.warning("nonmonontoic timestamp")
         x = events[:, 1].astype(np.int32)
         if self.flipx: x = (self.sizex - 1) - x  # 0 goes to sizex-1
         y = events[:, 2].astype(np.int32)
@@ -162,7 +157,7 @@ class AEDat2Output:
         p = ((events[:, 3] + 1) / 2).astype(np.int32) # 0=off, 1=on
 
         a = (x << self.xShiftBits | y << self.yShiftBits | p << self.polShiftBits)
-        if self.label_signal_noise and not signnoise_label is None:
+        if self.label_signal_noise and signnoise_label is not None:
             noise_mask=np.logical_not(signnoise_label) # true or 1 for noise event elements
             # print(f'\naddr before noise mask {a[0]:032_b}')
             a[np.where(noise_mask)]|=self.noise_special_event_bit # set the special event bits 11 and 10 to 1 for noise events
@@ -170,12 +165,12 @@ class AEDat2Output:
         out = np.empty(2 * n, dtype=np.int32) # for n events allocate 2n int32 because file holds int32 values addr0, timestamp0, addr1, timestamp1
         out[0::2] = a  # put addresses to even positions of out
         out[1::2] = t  # put timestamps to odd positions
-        bytes=out.byteswap().tobytes(order='C') # produce c-style bytes in Java big endian format for jAER
+        bytes=out.byteswap().tobytes(order="C") # produce c-style bytes in Java big endian format for jAER
         if self.numEventsWritten==0:
             #make sure we don't write comment char as first event
             chopped=False
-            while bytes[0:1].decode('utf-8',errors='ignore')=='#':
-                logger.warning('first event would write a # comment char, dropping it')
+            while bytes[0:1].decode("utf-8",errors="ignore")=="#":
+                logger.warning("first event would write a # comment char, dropping it")
                 bytes=bytes[8:]
                 chopped=True
         # now out is numpy array holding int32 timestamp,address array, i.e. ts0, ad0, ts1, ad1, etc

@@ -78,8 +78,8 @@ The desktop.windows module permits the inspection of desktop windows.
 __version__ = "0.5.4"
 
 import os
-import sys
 import shlex
+import sys
 
 # Provide suitable process creation functions.
 
@@ -166,8 +166,8 @@ def get_desktop():
     elif "GNOME_DESKTOP_SESSION_ID" in os.environ or \
         "GNOME_KEYRING_SOCKET" in os.environ:
         return "GNOME"
-    elif 'DESKTOP_SESSION' in os.environ and \
-        os.environ['DESKTOP_SESSION'].lower() == 'lubuntu':
+    elif "DESKTOP_SESSION" in os.environ and \
+        os.environ["DESKTOP_SESSION"].lower() == "lubuntu":
         return "GNOME"
     elif sys.platform == "darwin":
         return "Mac OS X"
@@ -279,7 +279,7 @@ def open(url, desktop=None, wait=0):
     elif desktop_in_use == "XFCE":
         # exo-open 0.10 cannot parse the mailto: URL scheme if there is no
         # recipient
-        if url.lower().startswith('mailto:'):
+        if url.lower().startswith("mailto:"):
             cmd = ["exo-open", "--launch", "MailReader", url]
         else:
             cmd = ["exo-open", url]
