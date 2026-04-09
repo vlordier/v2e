@@ -28,3 +28,4 @@ c35d98d	0.588900	0.0	keep	learning rate 1.2e-3 on batch=4 FiLM baseline
 09ada53	0.574800	0.0	discard	learning rate 1.4e-3 on batch=4 FiLM baseline
 8a2be73	0.582800	0.0	discard	reduce IMU LSTM depth to 1 on LR=1.2e-3
 174f7e0	0.581200	0.0	discard	deepen UNet to depth 4 on LR=1.2e-3 baseline
+9ec56e6	0.580900	0.0	discard	halve rate regularization to 0.005 on LR=1.2e-3 baseline
