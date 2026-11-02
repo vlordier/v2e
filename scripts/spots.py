@@ -5,7 +5,6 @@
 # --output_width=346 --output_height=260 --batch=64 --disable_slomo --synthetic_input=scripts.spots
 
 import argparse
-from typing import Tuple, Optional
 
 # from scipy import signal
 from skimage import draw  # pip install scikit-image
@@ -64,7 +63,7 @@ class spots(base_synthetic_input):  # the class name should be the same as the f
     RADIUS_PIX = 60  # radius of spot
     FREQ_HZ = 20  # freq of spot in Hz
 
-    def __init__(self, width: int = 346, height: int = 260, avi_path: Optional[str] = None, preview=False,
+    def __init__(self, width: int = 346, height: int = 260, avi_path: str | None = None, preview=False,
                  arg_list=None, parent_args=None) -> None:
         """ Constructs moving-dot class to make frames for v2e
 
@@ -76,10 +75,10 @@ class spots(base_synthetic_input):  # the class name should be the same as the f
         """
         super().__init__(width, height, avi_path, preview, arg_list)
         parser = argparse.ArgumentParser(arg_list)
-        parser.add_argument('--contrast', type=float, default=spots.CONTRAST)
-        parser.add_argument('--total_time', type=float, default=spots.TOTAL_TIME_S)
-        parser.add_argument('--dt', type=float, default=spots.DT_S)
-        parser.add_argument('--freq', type=float, default=spots.FREQ_HZ)
+        parser.add_argument("--contrast", type=float, default=spots.CONTRAST)
+        parser.add_argument("--total_time", type=float, default=spots.TOTAL_TIME_S)
+        parser.add_argument("--dt", type=float, default=spots.DT_S)
+        parser.add_argument("--freq", type=float, default=spots.FREQ_HZ)
         args = parser.parse_args(arg_list)
 
         self.avi_path = avi_path  # to write AVI
@@ -99,24 +98,24 @@ class spots(base_synthetic_input):  # the class name should be the same as the f
         self.frame_number = 0
         self.out = None
         self.log = sys.stdout
-        self.cv2name = 'v2e'
-        self.codec = 'HFYU'
+        self.cv2name = "v2e"
+        self.codec = "HFYU"
         self.preview = preview
         self.y = np.array(range(self.height))
         self.x = np.array(range(self.width))
         self.last_frame_written_time = 0
 
-        logger.info(f'contrast(factor): {self.contrast}\n'
-                    f'log_contrast(base_e): {np.log(self.contrast)}\n'
-                    f'duration(s): {self.t_total}\n'
-                    f'dt(s): {self.dt}\n'
-                    f'codec: {self.codec}\n')
+        logger.info(f"contrast(factor): {self.contrast}\n"
+                    f"log_contrast(base_e): {np.log(self.contrast)}\n"
+                    f"duration(s): {self.t_total}\n"
+                    f"dt(s): {self.dt}\n"
+                    f"codec: {self.codec}\n")
 
     def total_frames(self):
         """:returns: total number of frames"""
         return len(self.times)
 
-    def next_frame(self) -> Tuple[Optional[np.ndarray], float]:
+    def next_frame(self) -> tuple[np.ndarray | None, float]:
         """ Returns the next frame and its time, or None when finished
 
        :returns: (frame, time)
@@ -127,7 +126,7 @@ class spots(base_synthetic_input):  # the class name should be the same as the f
        """
         if self.frame_number >= len(self.times):
             cv2.destroyAllWindows()
-            logger.info(f'finished after {self.frame_number} frames')
+            logger.info(f"finished after {self.frame_number} frames")
             return None, self.times[-1]
         time = self.times[self.frame_number]
         # self.pix_arr.fill(self.bg)
@@ -140,8 +139,8 @@ class spots(base_synthetic_input):  # the class name should be the same as the f
             self.last_frame_written_time = time
         if self.preview and self.frame_number%10==0:
             k = cv2.waitKey(1)
-            if k == ord('x'):
-                logger.warning('aborted output after {} frames'.format(self.frame_number))
+            if k == ord("x"):
+                logger.warning(f"aborted output after {self.frame_number} frames")
                 cv2.destroyAllWindows()
                 self.cleanup()
                 return None, time
@@ -154,7 +153,7 @@ class spots(base_synthetic_input):  # the class name should be the same as the f
 if __name__ == "__main__":
     m = spots(preview=True)
     (fr, time) = m.next_frame()
-    with tqdm(total=m.total_frames(), desc='simulation', unit='fr') as pbar:  # instantiate progress bar
+    with tqdm(total=m.total_frames(), desc="simulation", unit="fr") as pbar:  # instantiate progress bar
         while fr is not None:
             (fr, time) = m.next_frame()
             pbar.update(1)

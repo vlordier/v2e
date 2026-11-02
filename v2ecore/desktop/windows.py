@@ -42,8 +42,9 @@ child_windows = window.children()
 See the desktop.windows.Window class for more information.
 """
 
-from desktop import _is_x11, _get_x11_vars, _readfrom, use_desktop
 import re
+
+from desktop import _get_x11_vars, _is_x11, _readfrom, use_desktop
 
 # System functions.
 
@@ -97,7 +98,7 @@ class Window:
 
     "A window on the desktop."
 
-    _name_pattern = re.compile(r':\s+\(.*?\)\s+[-0-9x+]+\s+[-0-9+]+$')
+    _name_pattern = re.compile(r":\s+\(.*?\)\s+[-0-9x+]+\s+[-0-9+]+$")
     _absent_names = "(has no name)", "(the root window) (has no name)"
 
     def __init__(self, identifier):

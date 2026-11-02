@@ -8,16 +8,14 @@
 # is encoded by the baseLogFrame which is initially at zero but increases to code the average of dot and background.
 # Then the low contrast of dot causes only a single ON event on first cycle
 import argparse
+import sys
 
-import numpy as np
 import cv2
-import os
+import numpy as np
 from tqdm import tqdm
 
 from v2ecore.base_synthetic_input import base_synthetic_input
 from v2ecore.v2e_utils import *
-import sys
-from typing import Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +56,7 @@ class moving_dot(base_synthetic_input): # the class name should be the same as t
     """ Generates moving dot
     """
 
-    def __init__(self, width: int = 346, height: int = 260, avi_path: Optional[str] = None, preview=True, arg_list=None, parent_args=None) -> None:
+    def __init__(self, width: int = 346, height: int = 260, avi_path: str | None = None, preview=True, arg_list=None, parent_args=None) -> None:
         """ Constructs moving-dot class to make frames for v2e
 
         :param width: width of frames in pixels
@@ -68,17 +66,17 @@ class moving_dot(base_synthetic_input): # the class name should be the same as t
         """
         super().__init__(width, height, avi_path, preview, arg_list)
         parser=argparse.ArgumentParser(arg_list)
-        parser.add_argument('--num_particles',type=int,default=5)
-        parser.add_argument('--contrast',type=float,default=10)
-        parser.add_argument('--bg',type=float,default=5)
-        parser.add_argument('--radius',type=float,default=100)
-        parser.add_argument('--cycles',type=float,default=None,help='number of cycles of moving dots')
-        parser.add_argument('--dt',type=float,default=100e-6,help='time step in seconds')
-        parser.add_argument('--t_total',type=float,default=None,help='specifies total time in seconds if given, other use cycles')
+        parser.add_argument("--num_particles",type=int,default=5)
+        parser.add_argument("--contrast",type=float,default=10)
+        parser.add_argument("--bg",type=float,default=5)
+        parser.add_argument("--radius",type=float,default=100)
+        parser.add_argument("--cycles",type=float,default=None,help="number of cycles of moving dots")
+        parser.add_argument("--dt",type=float,default=100e-6,help="time step in seconds")
+        parser.add_argument("--t_total",type=float,default=None,help="specifies total time in seconds if given, other use cycles")
         args = parser.parse_args(arg_list)
 
         if (args.cycles is None and args.t_total is None) or (args.cycles is not None and args.t_total is not None):
-            raise Exception('specify either one of --cycles or --t_total')
+            raise Exception("specify either one of --cycles or --t_total")
 
         self.speed_pps = 1000  # final speed, pix/s
         self.dot_sigma: float = 1  # gaussian sigma of dot in pixels
@@ -115,22 +113,22 @@ class moving_dot(base_synthetic_input): # the class name should be the same as t
         self.fps = 60
         self.frame_number = 0
         self.log = sys.stdout
-        self.cv2name = 'moving-dot'
-        self.codec = 'HFYU'
+        self.cv2name = "moving-dot"
+        self.codec = "HFYU"
         self.preview = preview
-        print('moving-dot: hit x to exit early')
-        logger.info(f'final_speed(pixels/s): {self.speed_pps}\n'
-                    f'dot_sigma(pixels): {self.dot_sigma}\n'
-                    f'radius(pixels): {self.radius}\n'
-                    f'contrast(factor): {self.contrast}\n'
-                    f'log_contrast(base_e): {np.log(self.contrast)}\n'
-                    f'bg: {self.bg}\n'
-                    f'fg: {self.fg}\n'
-                    f'duration(s): {self.t_total}\n'
-                    f'cycles: {self.cycles}\n'
-                    f'dt(s): {self.dt}\n'
-                    f'fps(Hz): {self.fps}\n'
-                    f'codec: {self.codec}\n')
+        print("moving-dot: hit x to exit early")
+        logger.info(f"final_speed(pixels/s): {self.speed_pps}\n"
+                    f"dot_sigma(pixels): {self.dot_sigma}\n"
+                    f"radius(pixels): {self.radius}\n"
+                    f"contrast(factor): {self.contrast}\n"
+                    f"log_contrast(base_e): {np.log(self.contrast)}\n"
+                    f"bg: {self.bg}\n"
+                    f"fg: {self.fg}\n"
+                    f"duration(s): {self.t_total}\n"
+                    f"cycles: {self.cycles}\n"
+                    f"dt(s): {self.dt}\n"
+                    f"fps(Hz): {self.fps}\n"
+                    f"codec: {self.codec}\n")
         if self.preview:
             cv2.namedWindow(self.cv2name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.cv2name, self.w, self.h)
@@ -139,7 +137,7 @@ class moving_dot(base_synthetic_input): # the class name should be the same as t
         """:returns: total number of frames"""
         return len(self.times)
 
-    def next_frame(self) -> Tuple[Optional[np.ndarray], float]:
+    def next_frame(self) -> tuple[np.ndarray | None, float]:
         """ Returns the next frame and its time, or None when finished
 
         :returns: (frame, time)
@@ -150,7 +148,7 @@ class moving_dot(base_synthetic_input): # the class name should be the same as t
             if self.avi_path is not None:
                 self.video_writer.release()
             cv2.destroyAllWindows()
-            logger.info('finished after {} frames'.format(self.frame_number))
+            logger.info(f"finished after {self.frame_number} frames")
             return None, self.times[-1]
         time = self.times[self.frame_number]
         pix_arr: np.ndarray = self.bg * np.ones((self.h, self.w), dtype=np.uint8)
@@ -187,8 +185,8 @@ class moving_dot(base_synthetic_input): # the class name should be the same as t
             self.video_writer.write(cv2.cvtColor(pix_arr, cv2.COLOR_GRAY2BGR))
         if self.preview and self.frame_number % 50 == 0:
             k = cv2.waitKey(1)
-            if k == ord('x'):
-                logger.warning('aborted output after {} frames'.format(self.frame_number))
+            if k == ord("x"):
+                logger.warning(f"aborted output after {self.frame_number} frames")
                 cv2.destroyAllWindows()
                 return None, time
         self.frame_number += 1
@@ -198,7 +196,7 @@ class moving_dot(base_synthetic_input): # the class name should be the same as t
 if __name__ == "__main__":
     m = moving_dot()
     (fr, time) = m.next_frame()
-    with tqdm(total=m.total_frames(), desc='moving-dot', unit='fr') as pbar:  # instantiate progress bar
+    with tqdm(total=m.total_frames(), desc="moving-dot", unit="fr") as pbar:  # instantiate progress bar
         while fr is not None:
             (fr, time) = m.next_frame()
             pbar.update(1)

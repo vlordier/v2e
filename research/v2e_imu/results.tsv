@@ -1,0 +1,33 @@
+commit	val_ap	peak_memory_gb	status	description
+8b6db50	0.5734	0.0	baseline	UNet BASE_CHANNELS=32 IMU_HIDDEN=128 focal_bce alpha=0.75 rate_reg=0.01 AMP per-channel
+44f75f9	0.5619	0.0	discard	BASE_CHANNELS=48 LR=5e-4 (larger model + lower LR both hurt)
+613a43c	0.5682	0.0	discard	BASE_CHANNELS=48 LR=1e-3 (larger model slower to converge in 15min)
+9f72407	0.5718	0.0	discard	WEIGHT_DECAY=1e-4 (marginal, precision dropped)
+afd2068	0.5651	0.0	discard	focal gamma=3.0 (stronger suppression, no precision improvement)
+af37f9d	0.5720	0.0	discard	WARMUP=5% WARMDOWN=50% (closest so far, precision 0.497 vs 0.488)
+87e7a3a	0.5757	0.0	keep	TOTAL_BATCH_SIZE=16 (2x gradient updates, +0.0023 over baseline)
+4e07ef3	0.5742	0.0	discard	batch=16 + WARMUP=5% WARMDOWN=50% (didn't stack, worse than batch=16 alone)
+f25d0dc	0.5776	0.0	keep	TOTAL_BATCH_SIZE=8 (4x gradient updates, +0.0019 over batch=16)
+c5e423b	0.5865	0.0	keep	TOTAL_BATCH_SIZE=4 (no accum, max updates, +0.0089 over batch=8)
+baf3a14	0.5842	0.0	discard	TOTAL_BATCH_SIZE=2 (too noisy, batch=4 is sweet spot)
+30c443d	0.5555	0.0	discard	FNO model batch=4 (9.3M params, too slow to converge in 15min)
+9371855	0.5787	0.0	discard	batch=4 LR=3e-4 (lower LR hurt, LR=1e-3 is optimal)
+dabbb83	0.000200	1.0	discard	Best batch-size configuration with stronger AdamW regularization.
+0e37b6b	0.573800	0.0	discard	BASE_CHANNELS=24 with batch=4 (smaller model)
+302ed22	0.569700	0.0	discard	gated IMU fusion with batch=4
+a34bb17	0.587700	0.0	keep	restore LR=1e-3 with batch=4
+cf0102b	0.581800	0.0	discard	focal alpha 0.85 on LR=1e-3 baseline
+8ea94be	0.582100	0.0	discard	additive IMU fusion on LR=1e-3 baseline
+14b1d6f	0.579800	0.0	discard	warmup 5 0x0p+0nd warmdown 500n LR=1e-3 baseline
+ed44514	0.580800	0.0	discard	scale-only FiLM on LR=1e-3 baseline
+9770610	0.581100	0.0	discard	weight decay 1e-5 on LR=1e-3 baseline
+2530426	0.581500	0.0	discard	IMU hidden 160 on LR=1e-3 baseline
+04cdfa9	0.566100	0.0	discard	UNet depth 2 on LR=1e-3 baseline
+c2d511e	0.583700	0.0	discard	learning rate 8e-4 on batch=4 FiLM baseline
+c35d98d	0.588900	0.0	keep	learning rate 1.2e-3 on batch=4 FiLM baseline
+09ada53	0.574800	0.0	discard	learning rate 1.4e-3 on batch=4 FiLM baseline
+8a2be73	0.582800	0.0	discard	reduce IMU LSTM depth to 1 on LR=1.2e-3
+174f7e0	0.581200	0.0	discard	deepen UNet to depth 4 on LR=1.2e-3 baseline
+9ec56e6	0.580900	0.0	discard	halve rate regularization to 0.005 on LR=1.2e-3 baseline
+053f924	0.581600	0.0	discard	switch to light model family on LR=1.2e-3 baseline
+cc6fb69	0.579000	0.0	discard	switch to heavy model family on LR=1.2e-3 baseline

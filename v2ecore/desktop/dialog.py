@@ -45,8 +45,10 @@ Supported desktop environments are listed in the desktop.dialog.supported
 attribute.
 """
 
-from desktop import use_desktop, _readfrom, _status
 from time import strptime
+
+from desktop import _readfrom, _status, use_desktop
+
 
 class _wrapper:
     def __init__(self, handler):

@@ -1,21 +1,26 @@
+import argparse
 import logging
 import os
 import sys
-
-import numpy as np
-import argparse
 from tempfile import TemporaryDirectory
+
 import matplotlib.pyplot as plt
-import matplotlib
+import numpy as np
+
 # matplotlib.use("TkAgg") # use in pycharm to avoid scientific mode plot?
 from tqdm import tqdm
-
-from v2e import desktop
+from v2e.ddd20_utils.ddd_h5_reader import DDD20SimpleReader
 from v2e.emulator import EventEmulator
 from v2e.slomo import SuperSloMo
-from v2e.ddd20_utils.ddd_h5_reader import DDD20ReaderMultiProcessing, DDD20SimpleReader
-from v2e.v2e_utils import inputVideoFileDialog, inputDDDFileDialog, select_events_in_roi, DVS_WIDTH, DVS_HEIGHT
 from v2e.v2e_args import write_args_info
+from v2e.v2e_utils import (
+    DVS_HEIGHT,
+    DVS_WIDTH,
+    inputDDDFileDialog,
+    select_events_in_roi,
+)
+
+from v2e import desktop
 
 logging.basicConfig()
 root = logging.getLogger()
@@ -25,8 +30,8 @@ logging.addLevelName(logging.WARNING, "\033[1;31m%s\033[1;0m" % logging.getLevel
 logging.addLevelName(logging.ERROR, "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
 logger = logging.getLogger(__name__)
 
-parser = argparse.ArgumentParser(description='ddd_find_thresholds.py: generate simulated DVS events from video with sweep of thresholds to compare with real DVS to find optimal thresholds.',
-                                 epilog='Run with no --input to open file dialog.\nIf slomo.avi aleady exists in output_folder, script will load frames from there rather than regenerating them with SuperSloMo.', allow_abbrev=True,
+parser = argparse.ArgumentParser(description="ddd_find_thresholds.py: generate simulated DVS events from video with sweep of thresholds to compare with real DVS to find optimal thresholds.",
+                                 epilog="Run with no --input to open file dialog.\nIf slomo.avi aleady exists in output_folder, script will load frames from there rather than regenerating them with SuperSloMo.", allow_abbrev=True,
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("--start", type=float, default=0.0, help="start point of video stream")
 parser.add_argument("--stop", type=float, default=5.0, help="stop point of video stream")
@@ -49,7 +54,7 @@ if __name__ == "__main__":
     if not args.input:
         input_file = inputDDDFileDialog()
         if not input_file:
-            logger.info('no file selected, quitting')
+            logger.info("no file selected, quitting")
             quit()
     else:
         input_file = args.input
@@ -74,33 +79,33 @@ if __name__ == "__main__":
     output_folder = args.output_folder
     Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-    slomoVideoFile=os.path.join(output_folder,'slomo.avi')
+    slomoVideoFile=os.path.join(output_folder,"slomo.avi")
     if Path(slomoVideoFile).exists():
-        logger.info('{} already exists, will use frames from it'.format(slomoVideoFile))
+        logger.info(f"{slomoVideoFile} already exists, will use frames from it")
     else:
         slomoVideoFile=None
 
     frames, dvsEvents = [], []
     dddReader = DDD20SimpleReader(input_file,rotate180=rotate180)
     frames, dvsEvents = dddReader.readEntire(startTimeS=args.start, stopTimeS=args.stop)
-    if frames is None or dvsEvents is None: raise Exception('no frames or no events')
+    if frames is None or dvsEvents is None: raise Exception("no frames or no events")
 
     # debug
-    ff=frames[0]['frame'].flatten()
+    ff=frames[0]["frame"].flatten()
     b=np.arange(0,256,1)
     plt.hist(ff,b)
     plt.show()
 
     dvsEvents=select_events_in_roi(dvsEvents,x,y)
-    dvsOnCount = np.count_nonzero((dvsEvents[:, 3] == 1))
+    dvsOnCount = np.count_nonzero(dvsEvents[:, 3] == 1)
     dvsOffCount = dvsEvents.shape[0] - dvsOnCount
 
     with TemporaryDirectory() as interp_frames_dir:
-        logger.info("intepolated frames folder: {}".format(interp_frames_dir))
+        logger.info(f"intepolated frames folder: {interp_frames_dir}")
         slomo = SuperSloMo(model=args.slomo_model, upsampling_factor=args.slowdown_factor, preview=preview)
-        slomo.interpolate(images=frames['frame'], output_folder=interp_frames_dir)  # writes all frames to interp_frames_folder
+        slomo.interpolate(images=frames["frame"], output_folder=interp_frames_dir)  # writes all frames to interp_frames_folder
         frame_ts = slomo.get_interpolated_timestamps(frames["ts"])
-        height, width = frames['frame'].shape[1:]
+        height, width = frames["frame"].shape[1:]
         nFrames = frames.shape[0]
 
         pos_thres = -1.
@@ -119,25 +124,25 @@ if __name__ == "__main__":
         min_neg_diff=np.inf
 
         fig,ax=plt.subplots()
-        plt.rcParams.update({'font.size': 18})
-        online, offline=ax.plot(thresholds, on_diffs, 'g-', thresholds, off_diffs, 'r-')
-        online.set_label('On')
-        offline.set_label('Off')
-        ax.set_ylabel('absolute event count difference')
-        ax.set_xlabel('threshold (log_e)')
+        plt.rcParams.update({"font.size": 18})
+        online, offline=ax.plot(thresholds, on_diffs, "g-", thresholds, off_diffs, "r-")
+        online.set_label("On")
+        offline.set_label("Off")
+        ax.set_ylabel("absolute event count difference")
+        ax.set_xlabel("threshold (log_e)")
         plt.ion()
         plt.show()
         # plt.legend()
 
-        for threshold in tqdm(thresholds, desc='thr sweep'):
+        for threshold in tqdm(thresholds, desc="thr sweep"):
             apsOnEvents = 0
             apsOffEvents = 0
             emulator.pos_thres = threshold
             emulator.neg_thres = threshold
             emulator.reset()
             for i in range(nFrames):
-                events_v2e = emulator.generate_events(frames['frame'][i], frame_ts[i])
-                if not events_v2e is None:
+                events_v2e = emulator.generate_events(frames["frame"][i], frame_ts[i])
+                if events_v2e is not None:
                     events_v2e=select_events_in_roi(events_v2e,x,y)
                     onCount=np.count_nonzero(events_v2e[:,3]==1)
                     offCount=events_v2e.shape[0]-onCount
@@ -165,27 +170,27 @@ if __name__ == "__main__":
             k=k+1
 
     if pos_thres > 0 and neg_thres > 0:
-        logger.info("Optimal Pos Threshold Found: {}".format(pos_thres))
-        logger.info("Optimal Neg Threshold Found: {}".format(neg_thres))
+        logger.info(f"Optimal Pos Threshold Found: {pos_thres}")
+        logger.info(f"Optimal Neg Threshold Found: {neg_thres}")
 
     print("Optimal thresholds for smallest difference in event counts")
-    print("thres_on={:.2f} thres_off={:.2f}".format(pos_thres, neg_thres))
+    print(f"thres_on={pos_thres:.2f} thres_off={neg_thres:.2f}")
 
     results=np.stack((thresholds,on_diffs,off_diffs),axis=0)
-    path = os.path.join(output_folder, 'find_thresholds.npy')
+    path = os.path.join(output_folder, "find_thresholds.npy")
     np.save(path, results)
 
-    path = os.path.join(output_folder, 'find_thresholds.pdf')
+    path = os.path.join(output_folder, "find_thresholds.pdf")
     fig.savefig(path)
-    path = os.path.join(output_folder, 'find_thresholds.png')
+    path = os.path.join(output_folder, "find_thresholds.png")
     fig.savefig(path)
-    logger.info('saved results to {}'.format(output_folder))
+    logger.info(f"saved results to {output_folder}")
 
     plt.show()
     try:
         desktop.open(os.path.abspath(output_folder))
     except Exception as e:
-        logger.warning('{}: could not open {} in desktop'.format(e, output_folder))
+        logger.warning(f"{e}: could not open {output_folder} in desktop")
     slomo.cleanup()
     try:
         quit()

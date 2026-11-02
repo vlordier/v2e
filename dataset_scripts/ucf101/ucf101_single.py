@@ -7,15 +7,15 @@ In each action class, one video is randomly selected.
 """
 
 import argparse
-import cv2
-import numpy as np
 import os
 import shutil
-
 from tempfile import TemporaryDirectory
 
-from v2e.renderer import VideoSequenceFiles2EventsRenderer, ImageSequenceArray2EventsRenderer
+import cv2
+import numpy as np
+from v2e.renderer import ImageSequenceArray2EventsRenderer, VideoSequenceFiles2EventsRenderer
 from v2e.slomo import SuperSloMo
+
 #TODO appears to convert webccam input to DVS frames
 
 if __name__ == "__main__":
@@ -130,7 +130,7 @@ if __name__ == "__main__":
                 args.neg_thres,
                 os.path.join(
                     args.output_dir,
-                    "interpolated_{:d}.avi".format(int(factor * fps))
+                    f"interpolated_{int(factor * fps):d}.avi"
                 )
             )
 
@@ -142,7 +142,7 @@ if __name__ == "__main__":
                 args.neg_thres,
                 os.path.join(
                     args.output_dir,
-                    "input_{:d}.avi".format(int(factor * fps))
+                    f"input_{int(factor * fps):d}.avi"
                 )
             )
 

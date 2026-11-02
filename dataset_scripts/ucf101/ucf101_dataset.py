@@ -7,14 +7,13 @@ In each action class, one video is randomly selected.
 """
 
 import argparse
-import cv2
-import numpy as np
 import os
 import random
 import shutil
-
 from tempfile import TemporaryDirectory
 
+import cv2
+import numpy as np
 from v2e.renderer import EventRenderer
 from v2e.slomo import SuperSloMo
 
@@ -78,7 +77,7 @@ if __name__ == "__main__":
         video = os.path.join(args.dataset, action, random.choice(candidates))
         output_path = os.path.join(args.output, action)
         os.mkdir(output_path)
-        print("{:d} - Action: {:s}\nVideo: {:s}".format(i, action, video))
+        print(f"{i:d} - Action: {action:s}\nVideo: {video:s}")
 
         # load frames from the input video.
         frames = []
@@ -138,7 +137,7 @@ if __name__ == "__main__":
                     args.neg_thres,
                     os.path.join(
                         output_path,
-                        "from_image_{:d}.avi".format(int(factor * fps))
+                        f"from_image_{int(factor * fps):d}.avi"
                     )
                 )
 

@@ -1,11 +1,11 @@
+import argparse
+import logging
+import os
 import sys
 from pathlib import Path
 
-import numpy as np
-import argparse
-import os
 import cv2
-import logging
+import numpy as np
 
 from v2e import desktop
 
@@ -18,17 +18,15 @@ logging.addLevelName( logging.ERROR, "\033[1;41m%s\033[1;0m" % logging.getLevelN
 logger=logging.getLogger(__name__)
 
 
-from v2e.v2e_utils import video_writer, select_events_in_roi, histogram_events_in_time_bins, DVS_WIDTH, DVS_HEIGHT
-from v2e.v2e_args import write_args_info
-
 # matplotlib.use('PS')
-
 from matplotlib import pyplot as plt
+from v2e.v2e_args import write_args_info
+from v2e.v2e_utils import histogram_events_in_time_bins, select_events_in_roi, video_writer
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description='Plots time trace of event activity from real DVS and v2e emualated events',
-                                 epilog='Run with no --input to open file dialog.\nAssumes that numpy data files have been generated using the --numpy_output option to ddd-v2e.py', allow_abbrev=True,
+    parser = argparse.ArgumentParser(description="Plots time trace of event activity from real DVS and v2e emualated events",
+                                 epilog="Run with no --input to open file dialog.\nAssumes that numpy data files have been generated using the --numpy_output option to ddd-v2e.py", allow_abbrev=True,
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument("--path", type=str, required=True, help="path to numpy input files and for storing output")
@@ -48,18 +46,18 @@ if __name__ == "__main__":
     rotate180=args.rotate180
 
     if not Path(path).exists():
-        logger.error('input folder {} not accessible'.format(Path(path)))
+        logger.error(f"input folder {Path(path)} not accessible")
         sys.exit(1)
 
     dvs_video_real_avi = os.path.join(path, "dvs-video-real.avi")
     if not Path(dvs_video_real_avi).exists():
-        logger.error('video {} not accessible'.format(dvs_video_real_avi))
+        logger.error(f"video {dvs_video_real_avi} not accessible")
         sys.exit(1)
 
     dvs_v2e_npy = os.path.join(path, "dvs_v2e.npy")
     dvs_real_npy = os.path.join(path, "dvs_real.npy")
     if not Path(dvs_v2e_npy).exists() or not Path(dvs_real_npy).exists():
-        logger.error('numpy event files {} or {} not accessible\nDid you run ddd-v2e.py first?'.format(dvs_v2e_npy, dvs_real_npy))
+        logger.error(f"numpy event files {dvs_v2e_npy} or {dvs_real_npy} not accessible\nDid you run ddd-v2e.py first?")
         sys.exit(1)
 
     events_aps = np.load(dvs_v2e_npy)
@@ -72,7 +70,7 @@ if __name__ == "__main__":
     outputVideoPath = os.path.join(path, "ddd_plot_event_counts.avi")
     out=video_writer(outputVideoPath, width=width, height=height)
 
-    logger.info("Input video {}: width: {} \t height: {}".format(dvs_video_real_avi,width, height))
+    logger.info(f"Input video {dvs_video_real_avi}: width: {width} \t height: {height}")
 
     x = tuple(args.x)
     y = tuple(args.y)
@@ -84,7 +82,7 @@ if __name__ == "__main__":
     start = (ts0+args.start)
     stop = (args.stop+ts0)
     i = 0
-    logger.info('writing video output file {} with ROI labeled'.format(outputVideoPath))
+    logger.info(f"writing video output file {outputVideoPath} with ROI labeled")
     while(cap.isOpened()):
         ret, img = cap.read()
         if ret: # and i >= start and i <= stop:
@@ -93,18 +91,18 @@ if __name__ == "__main__":
                 img, (args.x[0], args.y[0]), (args.x[1], args.y[1]), 255, 2)
             out.write(cv2.cvtColor((img * 255).astype(np.uint8),
                                    cv2.COLOR_GRAY2BGR))
-            if cv2.waitKey(int(1000/30)) & 0xFF == ord('q'):
+            if cv2.waitKey(int(1000/30)) & 0xFF == ord("q"):
                 break
         else:
             break
         i += 1
     out.release()
-    logger.info("finished writing {}.".format(outputVideoPath))
+    logger.info(f"finished writing {outputVideoPath}.")
 
     aps = select_events_in_roi(events_aps, x, y)
     dvs_v2e_npy = select_events_in_roi(events_dvs, x, y)
 
-    logger.info('histogram_events_in_time_bins events...')
+    logger.info("histogram_events_in_time_bins events...")
     aps_pos = histogram_events_in_time_bins(aps, time_bin_ms=time_bin_ms, polarity=1, start=start, stop=stop)
     dvs_pos = histogram_events_in_time_bins(dvs_v2e_npy, time_bin_ms=time_bin_ms, polarity=1, start=start, stop=stop) # APS off events from v2e have polarity -1
     aps_neg = histogram_events_in_time_bins(aps, time_bin_ms=time_bin_ms, polarity=-1, start=start, stop=stop)
@@ -117,13 +115,13 @@ if __name__ == "__main__":
     y_min = -max(aps_neg[:, 1].max(), dvs_neg[:, 1].max()) - 1
 
     plt.bar(dvs_pos[:, 0] + 0.5 * width-ts0, dvs_pos[:, 1],
-            width=width, color='red',label='DVS ON')
+            width=width, color="red",label="DVS ON")
     plt.bar(aps_pos[:, 0] - 0.5 * width-ts0, aps_pos[:, 1],
-            width=width, color='blue', label="v2e ON")
+            width=width, color="blue", label="v2e ON")
     plt.bar(dvs_neg[:, 0] + 0.5 * width-ts0, -dvs_neg[:, 1],
-            width=width, color='orange', label='DVS OFF')
+            width=width, color="orange", label="DVS OFF")
     plt.bar(aps_neg[:, 0] - 0.5 * width-ts0, -aps_neg[:, 1],
-            width=width, color='green', label="v2e OFF")
+            width=width, color="green", label="v2e OFF")
 
     plt.xlabel("t [s]", fontsize=16)
     plt.ylabel("#(events)", fontsize=16)
@@ -137,12 +135,12 @@ if __name__ == "__main__":
     # save the figure
     plt.savefig(os.path.join(path, "ddd-plot-event-counts.pdf"))
     plt.savefig(os.path.join(path, "ddd-plot-event-counts.png"))
-    logger.info('plots written to ddd-plot-event-counts.* in folder {}'.format(path))
+    logger.info(f"plots written to ddd-plot-event-counts.* in folder {path}")
     plt.show()
     try:
         desktop.open(os.path.abspath(path))
     except Exception as e:
-        logger.warning('{}: could not open {} in desktop'.format(e, path))
+        logger.warning(f"{e}: could not open {path} in desktop")
     try:
         quit()
     finally:

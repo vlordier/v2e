@@ -1,19 +1,19 @@
-
-'''
+"""
 Recorder for DAVIS + OpenXC data
 Author: J. Binas <jbinas@gmail.com>, 2017
 
 This software is released under the
 GNU LESSER GENERAL PUBLIC LICENSE Version 3.
-'''
+"""
 
-from __future__ import absolute_import, print_function
-
-import time, sys
+import logging
 import multiprocessing as mp
-import numpy as np
+import time
+
 from openxc.tools import dump as oxc
-import queue
+
+logger = logging.getLogger(__name__)
+
 
 class Monitor(mp.Process):
     def __init__(self, bufsize=256):
@@ -25,12 +25,12 @@ class Monitor(mp.Process):
         self.qsize = 0
         self.maxsize = self.q._maxsize
         self.exit = mp.Event()
-        #self.daemon = True
+        # self.daemon = True
         self.start()
 
     def run(self):
         self.source.start()
-        #self.source.join()
+        # self.source.join()
         while not self.exit.is_set():
             try:
                 time.sleep(1e-5)
@@ -39,23 +39,22 @@ class Monitor(mp.Process):
                 self.exit.set()
 
     def receive(self, message, **kwargs):
-        ''' receive single message from interface '''
+        """receive single message from interface"""
         if self.exit.is_set():
             return
-        message['timestamp'] = int(time.time() * 1e6)
+        message["timestamp"] = int(time.time() * 1e6)
         try:
             self.q.put_nowait(message)
             self.qsize = max(self.qsize, self.q.qsize())
         except Queue.Full:
-            raise Queue.Full('vi buffer overflow')
+            raise Queue.Full("vi buffer overflow")
 
     def get(self):
-        ''' get one message from buffer '''
+        """get one message from buffer"""
         return self.q.get_nowait() if not self.q.empty() else False
 
 
-if __name__ == '__main__':
-
+if __name__ == "__main__":
     vi = Monitor()
 
     i = 0
@@ -63,10 +62,9 @@ if __name__ == '__main__':
     while True:
         res = vi.get()
         if res:
-            print(res)
+            logger.debug("received: %s", res)
         if time.time() - t > 1:
-            print('\npolling at', i / (time.time() - t), 'Hz\n')
+            logger.info("polling at %s Hz", i / (time.time() - t))
             i = 0
             t = time.time()
         i += 1
-

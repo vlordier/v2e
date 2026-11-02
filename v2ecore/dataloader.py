@@ -4,10 +4,10 @@
     @contact: zhehe@student.ethz.ch
     @latest update: 2019-May-27th
 """
-import torch.utils.data as data
-
 import glob
+
 import numpy as np
+import torch.utils.data as data
 from PIL import Image
 
 
@@ -89,13 +89,13 @@ class Frames(data.Dataset):
             @Return: str.
         """
 
-        fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
-        fmt_str += '    Number of datapoints: {}\n'.format(self.__len__())
-        tmp = '    Transforms (if any): '
-        fmt_str += '{0}{1}\n'.format(
+        fmt_str = "Dataset " + self.__class__.__name__ + "\n"
+        fmt_str += f"    Number of datapoints: {self.__len__()}\n"
+        tmp = "    Transforms (if any): "
+        fmt_str += "{0}{1}\n".format(
             tmp,
-            self.transform.__repr__().replace('\n',
-                                              '\n' + ' ' * len(tmp)))
+            self.transform.__repr__().replace("\n",
+                                              "\n" + " " * len(tmp)))
         return fmt_str
 
 
@@ -114,7 +114,7 @@ class FramesDirectory(data.Dataset):
                 transform: Compose object.
         """
 
-        self.files = sorted(glob.glob("{}".format(folder_path)+parsing))
+        self.files = sorted(glob.glob(f"{folder_path}"+parsing))
 
         self.transform = transform
         self.origDim = ori_dim
@@ -169,11 +169,11 @@ class FramesDirectory(data.Dataset):
             @Return: str.
         """
 
-        fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
-        fmt_str += '    Number of datapoints: {}\n'.format(self.__len__())
-        tmp = '    Transforms (if any): '
-        fmt_str += '{0}{1}\n'.format(
+        fmt_str = "Dataset " + self.__class__.__name__ + "\n"
+        fmt_str += f"    Number of datapoints: {self.__len__()}\n"
+        tmp = "    Transforms (if any): "
+        fmt_str += "{0}{1}\n".format(
             tmp,
-            self.transform.__repr__().replace('\n',
-                                              '\n' + ' ' * len(tmp)))
+            self.transform.__repr__().replace("\n",
+                                              "\n" + " " * len(tmp)))
         return fmt_str
